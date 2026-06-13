@@ -1,6 +1,7 @@
 """
 poa_generator.py  —  Pure logic, no UI.
 Handles field definitions, Word replacement, CSV parsing, and document generation.
+Supports: 1-IP/1-agent (Shi & Aispuro style) and 2-IP/3-agent (Ding & Luo style).
 """
 
 import io
