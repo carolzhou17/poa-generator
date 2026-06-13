@@ -4,3 +4,4 @@ __pycache__/
 .env
 generate_poa.py
 Generated/
+poa_template.docx
