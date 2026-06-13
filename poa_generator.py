@@ -165,6 +165,16 @@ FIELDS = [
         "help":           "e.g., EJ4979964",
     },
     {
+        "key":            "agent_pronoun",
+        "label":          "Agent Pronoun",
+        "section":        "Agent (Attorney-in-Fact)",
+        "template_value": "her",
+        "required":       False,
+        "to_upper":       False,
+        "default":        "her",
+        "help":           "her / his / their  — used in document body to refer to the agent",
+    },
+    {
         "key":            "attorney_name",
         "label":          "Handling Attorney",
         "section":        "Firm",
@@ -204,6 +214,7 @@ REPLACEMENT_ORDER = [
     "agent_passport",
     "passport_country",
     "principal_role",
+    "agent_pronoun",
 ]
 
 
