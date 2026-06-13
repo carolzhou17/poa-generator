@@ -83,12 +83,9 @@ def render_sidebar():
             st.error("No template loaded — upload one below before generating.")
 
         uploaded = st.file_uploader("Upload POA template (.docx)", type=["docx"])
-        if uploaded:
-            data = uploaded.read()
-            st.session_state["template_bytes"] = data
-            # Clear any previously generated result when a new template is loaded
+        if uploaded and "template_bytes" not in st.session_state:
+            st.session_state["template_bytes"] = uploaded.read()
             st.session_state.pop("single_result", None)
-            st.rerun()
 
         st.divider()
         st.caption(
