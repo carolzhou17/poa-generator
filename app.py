@@ -13,17 +13,18 @@ import pandas as pd
 import streamlit as st
 
 from poa_generator import (
-    FIELDS, PRINCIPAL_FIELDS, CASE_FIELDS,
-    FIELDS_2IP,
-    generate_multi_poa_bytes,
-    generate_2ip_poa_bytes,
+    # Legacy (batch CSV only)
+    FIELDS, CASE_FIELDS,
+    generate_poa_bytes,
     validate_case,
-    validate_2ip_case,
     make_filename,
-    make_filename_2ip,
     load_cases_from_csv,
     get_csv_columns,
     get_example_row,
+    # V2 unified
+    generate_poa_v2_bytes,
+    validate_v2,
+    make_filename_v2,
 )
 
 st.set_page_config(
@@ -33,359 +34,323 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Template loading — two slots: tpl1 (1 IP) and tpl2 (2 IPs)
+# Agent ID type choices  (label shown in dropdown → full phrase for document)
+# ---------------------------------------------------------------------------
+
+ID_TYPES = {
+    "California Driver's License": "California’s Driver License No.",
+    "Nevada Driver's License":     "Nevada’s Driver License No.",
+    "Texas Driver's License":      "Texas Driver’s License No.",
+    "New York Driver's License":   "New York Driver’s License No.",
+    "Illinois Driver's License":   "Illinois Driver’s License No.",
+    "Washington Driver's License": "Washington Driver’s License No.",
+    "Oregon Driver's License":     "Oregon Driver’s License No.",
+    "China Passport":              "People’s Republic of China Passport No.",
+    "Taiwan Passport":             "Republic of China Passport No.",
+    "US Passport":                 "United States Passport No.",
+    "Other (type full phrase)":    None,
+}
+
+_ID_LABELS = list(ID_TYPES.keys())
+
+# ---------------------------------------------------------------------------
+# Template loading — one slot per combo (num_ips, num_agents)
 # ---------------------------------------------------------------------------
 
 _LOCAL = os.path.dirname(os.path.abspath(__file__))
 
-_LOCAL_TEMPLATES = {
-    "tpl1": os.path.join(_LOCAL, "poa_template.docx"),
-    "tpl2": os.path.join(_LOCAL, "poa_template_2ip.docx"),
-}
 
-_ONEDRIVE_TEMPLATES = {
-    "tpl1": (
-        r"C:\Users\zhous\OneDrive - Tsong Law Group"
-        r"\Ralph Tsong's files - Marketing\POA Pilot"
-        r"\Power of Attorney - Shi & Aispuro - C&T Fertility Consultant.docx"
-    ),
-    "tpl2": (
-        r"C:\Users\zhous\OneDrive - Tsong Law Group"
-        r"\Ralph Tsong's files - Marketing\POA Pilot"
-        r"\poa_template_2ip.docx"
-    ),
-}
+def _combo_key(num_ips: int, num_agents: int) -> str:
+    return f"tpl_{num_ips}_{num_agents}"
 
 
-def get_template_bytes(key: str = "tpl1") -> Optional[bytes]:
+def _local_path(num_ips: int, num_agents: int) -> str:
+    return os.path.join(_LOCAL, f"poa_template_{num_ips}ip_{num_agents}agent.docx")
+
+
+def get_template_bytes(num_ips: int, num_agents: int) -> Optional[bytes]:
+    key = _combo_key(num_ips, num_agents)
     if key in st.session_state:
         return st.session_state[key]
-    for path in [_LOCAL_TEMPLATES.get(key), _ONEDRIVE_TEMPLATES.get(key)]:
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                data = f.read()
-                st.session_state[key] = data
-                return data
+    path = _local_path(num_ips, num_agents)
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            data = f.read()
+        st.session_state[key] = data
+        return data
     return None
 
 
 # ---------------------------------------------------------------------------
-# Sidebar — separate upload per template type
+# Sidebar
 # ---------------------------------------------------------------------------
+
+_COMBO_LABELS = {
+    (1, 1): "1 IP  /  1 Agent",
+    (1, 2): "1 IP  /  2 Agents",
+    (1, 3): "1 IP  /  3 Agents",
+    (2, 1): "2 IPs  /  1 Agent",
+    (2, 2): "2 IPs  /  2 Agents",
+    (2, 3): "2 IPs  /  3 Agents",
+}
+
 
 def render_sidebar():
     with st.sidebar:
         st.header("Templates")
+        st.caption("Run `python prep_all_templates.py` once to generate templates, then upload here.")
 
-        with st.expander("1 IP + 1 Agent  (Passport-based)", expanded=True):
-            tpl1 = get_template_bytes("tpl1")
-            if tpl1:
-                st.success(f"Ready ({len(tpl1):,} bytes)")
-            else:
-                st.error("Not loaded")
-            up1 = st.file_uploader("Upload template", type=["docx"], key="up_tpl1")
-            if up1 and "tpl1" not in st.session_state:
-                st.session_state["tpl1"] = up1.read()
-                st.session_state.pop("result", None)
-            st.caption("`poa_template.docx`  (Shi & Aispuro style)")
+        selected_label = st.selectbox(
+            "Upload slot:",
+            list(_COMBO_LABELS.values()),
+            key="sidebar_combo",
+        )
+        combo = next(k for k, v in _COMBO_LABELS.items() if v == selected_label)
+        nip, na = combo
 
-        with st.expander("2 IPs + 3 Agents  (CA Driver's License)", expanded=True):
-            tpl2 = get_template_bytes("tpl2")
-            if tpl2:
-                st.success(f"Ready ({len(tpl2):,} bytes)")
-            else:
-                st.warning("Not loaded — run `python prep_2ip_template.py` first, then upload the output.")
-            up2 = st.file_uploader("Upload template", type=["docx"], key="up_tpl2")
-            if up2 and "tpl2" not in st.session_state:
-                st.session_state["tpl2"] = up2.read()
-                st.session_state.pop("result", None)
-            st.caption("`poa_template_2ip.docx`  (Ding & Luo style)")
+        tpl = get_template_bytes(nip, na)
+        if tpl:
+            st.success(f"Loaded  ({len(tpl):,} bytes)")
+        else:
+            st.warning("Not loaded")
+
+        up = st.file_uploader(
+            "Upload .docx",
+            type=["docx"],
+            key=f"up_{_combo_key(nip, na)}",
+            label_visibility="collapsed",
+        )
+        if up is not None:
+            st.session_state[_combo_key(nip, na)] = up.read()
+            st.session_state.pop("result", None)
+            st.rerun()
+
+        st.divider()
+        st.markdown("**All templates:**")
+        for (i, a), lbl in _COMBO_LABELS.items():
+            icon = "✓" if get_template_bytes(i, a) else "✗"
+            st.caption(f"{icon}  {lbl}")
 
 
 # ---------------------------------------------------------------------------
-# Tab 1 — Single case
+# Tab 1 — Single case (V2, all 6 combos)
 # ---------------------------------------------------------------------------
 
 def render_single_tab():
-    st.subheader("Case Type")
+    c1, c2 = st.columns(2)
+    with c1:
+        num_ips = st.selectbox("Intended Parents:", [1, 2], key="v2_num_ips")
+    with c2:
+        num_agents = st.selectbox("Agents / POAs:", [1, 2, 3], key="v2_num_agents")
 
-    case_type = st.radio(
-        "Select the case structure:",
-        options=[
-            "1–3 Intended Parents,  1 Agent  (Passport)",
-            "2 Intended Parents,  3 Agents  (CA Driver's License)",
-        ],
-        key="case_type_selector",
-        horizontal=True,
-    )
-
-    is_2ip = "3 Agents" in case_type
-
-    # Clear stale result when the user switches case types
-    if st.session_state.get("_last_case_type") != case_type:
-        st.session_state["_last_case_type"] = case_type
+    # Clear stale result when combo changes
+    combo_key = f"{num_ips}_{num_agents}"
+    if st.session_state.get("_v2_last_combo") != combo_key:
+        st.session_state["_v2_last_combo"] = combo_key
         st.session_state.pop("result", None)
 
-    tpl_key = "tpl2" if is_2ip else "tpl1"
-    if not get_template_bytes(tpl_key):
-        tpl_label = "2-IP + 3-Agent" if is_2ip else "1-IP + 1-Agent"
-        st.warning(f"Upload the {tpl_label} template in the sidebar first.")
+    tpl = get_template_bytes(num_ips, num_agents)
+    label = _COMBO_LABELS[(num_ips, num_agents)]
+    if not tpl:
+        st.warning(f"Upload the **{label}** template in the sidebar first.")
         return
 
     st.divider()
 
-    if is_2ip:
-        _render_2ip_form()
-    else:
-        _render_1ip_form()
+    with st.form("poa_v2_form", clear_on_submit=False):
 
+        # ── IP sections ──────────────────────────────────────────────────────
+        for n in range(1, num_ips + 1):
+            header = f"#### Intended Parent {n}" if num_ips > 1 else "#### Intended Parent"
+            st.markdown(header)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.text_input(
+                    "Full Name *",
+                    key=f"v2_ip{n}_name",
+                    help="ALL CAPS — e.g., CHENGFANG DING",
+                )
+            with c2:
+                st.selectbox(
+                    "Role",
+                    ["Intended Father", "Intended Mother"],
+                    key=f"v2_ip{n}_role",
+                )
+            with c3:
+                st.text_input(
+                    "Passport Country",
+                    value="People's Republic of China",
+                    key=f"v2_ip{n}_country",
+                )
+            c4, c5 = st.columns(2)
+            with c4:
+                st.text_input(
+                    "Passport Number *",
+                    key=f"v2_ip{n}_passport",
+                    help="e.g., ED3297013",
+                )
+            with c5:
+                st.file_uploader(
+                    f"IP {n} — Passport / ID Photo",
+                    type=["jpg", "jpeg", "png"],
+                    key=f"v2_photo_ip{n}",
+                )
+            st.divider()
 
-# ---- 1-IP form (existing logic) -------------------------------------------
-
-def _render_1ip_form():
-    st.subheader("Case Information")
-
-    num_principals = st.selectbox(
-        "How many Intended Parents (principals) in this case?",
-        options=[1, 2, 3],
-        key="num_principals",
-        help="Each principal gets their own POA section in the combined document.",
-    )
-
-    sections = {}
-    for f in CASE_FIELDS:
-        sections.setdefault(f["section"], []).append(f)
-
-    with st.form("poa_form", clear_on_submit=False):
-
+        # ── Case details ─────────────────────────────────────────────────────
         st.markdown("#### Case Details")
-        left, right = st.columns(2)
-        section_list = list(sections.items())
-        for i, (sec_name, fields) in enumerate(section_list):
-            col = left if i % 2 == 0 else right
-            with col:
-                st.markdown(f"**{sec_name}**")
-                for field in fields:
-                    label = field["label"] + (" *" if field["required"] else "")
-                    st.text_input(
-                        label,
-                        value=field["default"],
-                        key=f"case_{field['key']}",
-                        help=field["help"] or None,
-                    )
-                st.write("")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.text_input("Child Last Name *", key="v2_child_last_name",
+                          help="ALL CAPS — appears as 'Infant [NAME]'")
+            st.text_input("Due Date *", key="v2_due_date",
+                          help="e.g., March 15, 2026")
+        with c2:
+            st.text_input("Surrogate Full Name *", key="v2_surrogate_name",
+                          help="ALL CAPS")
+            st.text_input("Hospital Name", key="v2_hospital_name",
+                          value="Loma Linda University Medical Center")
+        with c3:
+            st.text_input("Surrogate Date of Birth *", key="v2_surrogate_dob",
+                          help="e.g., May 22, 1996")
+            c3a, c3b = st.columns(2)
+            with c3a:
+                st.text_input("Hospital City", key="v2_hospital_city",
+                              value="Loma Linda")
+            with c3b:
+                st.text_input("Hospital State", key="v2_hospital_state",
+                              value="California")
 
         st.divider()
 
-        for p_idx in range(num_principals):
-            label_num = f"Principal {p_idx + 1}" if num_principals > 1 else "Principal (Intended Parent)"
-            st.markdown(f"#### {label_num}")
-            p_left, p_right = st.columns(2)
-
-            with p_left:
-                for field in PRINCIPAL_FIELDS[:2]:
-                    lbl = field["label"] + (" *" if field["required"] else "")
-                    st.text_input(lbl, value=field["default"],
-                                  key=f"p{p_idx}_{field['key']}", help=field["help"] or None)
-
-            with p_right:
-                for field in PRINCIPAL_FIELDS[2:]:
-                    lbl = field["label"] + (" *" if field["required"] else "")
-                    st.text_input(lbl, value=field["default"],
-                                  key=f"p{p_idx}_{field['key']}", help=field["help"] or None)
-
+        # ── Agent sections ────────────────────────────────────────────────────
+        for n in range(1, num_agents + 1):
+            header = f"#### Agent {n}" if num_agents > 1 else "#### Agent / POA"
+            st.markdown(header)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.text_input("Full Name *", key=f"v2_agent{n}_name", help="ALL CAPS")
+                st.text_input("Date of Birth *", key=f"v2_agent{n}_dob",
+                              help="e.g., 02/24/1986")
+            with c2:
+                id_type_choice = st.selectbox(
+                    "ID Type",
+                    _ID_LABELS,
+                    key=f"v2_agent{n}_id_type",
+                )
+                id_number = st.text_input("ID Number *", key=f"v2_agent{n}_id_number",
+                                          help="e.g., Y1234567 or EJ4979964")
+                if ID_TYPES[id_type_choice] is None:
+                    st.text_input(
+                        "Full ID type label *",
+                        key=f"v2_agent{n}_id_custom",
+                        help='e.g., "Florida\'s Driver License No."',
+                    )
             st.file_uploader(
-                f"{'Principal' if num_principals == 1 else label_num} — Passport / ID Photo",
+                f"Agent {n} — ID Photo",
                 type=["jpg", "jpeg", "png"],
-                key=f"photo_p{p_idx}",
+                key=f"v2_photo_agent{n}",
             )
-            if p_idx < num_principals - 1:
+            if n < num_agents:
                 st.divider()
 
         st.divider()
-        st.markdown("**Agent's Passport / ID Photo**")
-        st.file_uploader("Agent / Attorney-in-Fact ID photo", type=["jpg", "jpeg", "png"],
-                         key="photo_agent", label_visibility="collapsed")
+
+        # ── Firm ─────────────────────────────────────────────────────────────
+        st.markdown("#### Firm")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.text_input("Handling Attorney", key="v2_attorney_name",
+                          value="Xuelan Fang")
+        with c2:
+            st.text_input("Fertility Agency (for filename only)",
+                          key="v2_agency_name")
 
         st.write("")
-        submitted = st.form_submit_button("Generate POA Document", type="primary",
-                                          use_container_width=True)
+        submitted = st.form_submit_button(
+            "Generate POA Document", type="primary", use_container_width=True
+        )
 
     if submitted:
-        _run_1ip_generate(num_principals)
+        _run_v2_generate(num_ips, num_agents)
 
     _render_result()
 
 
-def _run_1ip_generate(num_principals: int):
-    tpl = get_template_bytes("tpl1")
+def _run_v2_generate(num_ips: int, num_agents: int):
+    tpl = get_template_bytes(num_ips, num_agents)
     if not tpl:
         st.session_state["result"] = {"error": "No template loaded."}
         return
 
-    case_info = {}
-    for field in CASE_FIELDS:
-        raw = st.session_state.get(f"case_{field['key']}", field["default"]) or ""
-        case_info[field["key"]] = raw.strip().upper() if field["to_upper"] else raw.strip()
-
-    principals = []
-    for p_idx in range(num_principals):
-        p = {}
-        for field in PRINCIPAL_FIELDS:
-            raw = st.session_state.get(f"p{p_idx}_{field['key']}", field["default"]) or ""
-            p[field["key"]] = raw.strip().upper() if field["to_upper"] else raw.strip()
-        photo_file = st.session_state.get(f"photo_p{p_idx}")
-        if photo_file is not None:
-            p["photo"] = photo_file.read()
-        principals.append(p)
-
-    agent_file = st.session_state.get("photo_agent")
-    agent_photo = agent_file.read() if agent_file is not None else None
-
-    errors = validate_case(case_info, principals)
-    if errors:
-        st.session_state["result"] = {"errors": errors}
-        return
-
-    try:
-        doc_bytes, count = generate_multi_poa_bytes(tpl, case_info, principals, agent_photo)
-        filename = make_filename(case_info, principals)
-        st.session_state["result"] = {"doc_bytes": doc_bytes, "filename": filename, "count": count}
-    except Exception as exc:
-        st.session_state["result"] = {"error": str(exc)}
-
-
-# ---- 2-IP form (new) -------------------------------------------------------
-
-def _render_2ip_form():
-    st.subheader("Case Information  —  2 IPs / 3 Agents")
-
-    with st.form("poa_2ip_form", clear_on_submit=False):
-
-        # IPs
-        for ip_num in (1, 2):
-            st.markdown(f"#### Intended Parent {ip_num}")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.text_input(f"Full Name *", key=f"ip{ip_num}_name",
-                              help="ALL CAPS — e.g., CHENGFANG DING")
-            with c2:
-                st.text_input(f"Passport Number *", key=f"ip{ip_num}_passport",
-                              help="e.g., ED3297013")
-            st.file_uploader(f"IP{ip_num} Passport / ID Photo",
-                             type=["jpg", "jpeg", "png"], key=f"photo_ip{ip_num}")
-            st.divider()
-
-        # Case details
-        st.markdown("#### Case Details")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.text_input("Child Last Name *", key="2ip_child_last_name",
-                          help="ALL CAPS — will appear as 'Infant [LAST NAME]'")
-            st.text_input("Surrogate Full Name *", key="2ip_surrogate_name", help="ALL CAPS")
-            st.text_input("Surrogate Date of Birth *", key="2ip_surrogate_dob",
-                          help="e.g., May 22, 1996")
-        with c2:
-            st.text_input("Due Date *", key="2ip_due_date", help="e.g., March 15, 2026")
-            st.text_input("Hospital Name", key="2ip_hospital_name",
-                          value="Loma Linda University Medical Center")
-
-        st.divider()
-
-        # Agents
-        for a in range(1, 4):
-            st.markdown(f"#### Agent {a}")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.text_input("Full Name *", key=f"2ip_agent{a}_name", help="ALL CAPS")
-            with c2:
-                st.text_input("Date of Birth *", key=f"2ip_agent{a}_dob",
-                              help="e.g., 02/24/1986")
-            with c3:
-                st.text_input("CA Driver License No. *", key=f"2ip_agent{a}_dl",
-                              help="e.g., Y1234567")
-            st.file_uploader(f"Agent {a} ID Photo",
-                             type=["jpg", "jpeg", "png"], key=f"photo_agent{a}")
-            if a < 3:
-                st.divider()
-
-        st.divider()
-
-        # Firm
-        st.markdown("#### Firm Details")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.text_input("Handling Attorney", key="2ip_attorney_name", value="Xuelan Fang")
-        with c2:
-            st.text_input("Fertility Agency (for filename)", key="2ip_agency_name")
-
-        st.write("")
-        submitted = st.form_submit_button("Generate 2-IP POA Document", type="primary",
-                                          use_container_width=True)
-
-    if submitted:
-        _run_2ip_generate()
-
-    _render_result()
-
-
-def _run_2ip_generate():
-    tpl = get_template_bytes("tpl2")
-    if not tpl:
-        st.session_state["result"] = {"error": "No 2-IP template loaded."}
-        return
-
-    def _get(key, upper=False, default=""):
-        raw = (st.session_state.get(key) or default).strip()
+    def _get(k, upper=False, default=""):
+        raw = (st.session_state.get(k) or default).strip()
         return raw.upper() if upper else raw
 
-    info = {
-        "ip1_name":        _get("ip1_name", upper=True),
-        "ip1_passport":    _get("ip1_passport"),
-        "ip2_name":        _get("ip2_name", upper=True),
-        "ip2_passport":    _get("ip2_passport"),
-        "child_last_name": _get("2ip_child_last_name", upper=True),
-        "surrogate_name":  _get("2ip_surrogate_name", upper=True),
-        "surrogate_dob":   _get("2ip_surrogate_dob"),
-        "due_date":        _get("2ip_due_date"),
-        "hospital_name":   _get("2ip_hospital_name", default="Loma Linda University Medical Center"),
-        "agent1_name":     _get("2ip_agent1_name", upper=True),
-        "agent1_dob":      _get("2ip_agent1_dob"),
-        "agent1_dl":       _get("2ip_agent1_dl"),
-        "agent2_name":     _get("2ip_agent2_name", upper=True),
-        "agent2_dob":      _get("2ip_agent2_dob"),
-        "agent2_dl":       _get("2ip_agent2_dl"),
-        "agent3_name":     _get("2ip_agent3_name", upper=True),
-        "agent3_dob":      _get("2ip_agent3_dob"),
-        "agent3_dl":       _get("2ip_agent3_dl"),
-        "attorney_name":   _get("2ip_attorney_name", default="Xuelan Fang"),
-        "agency_name":     _get("2ip_agency_name"),
-    }
+    info: dict = {}
 
-    errors = validate_2ip_case(info)
+    # IPs
+    for n in range(1, num_ips + 1):
+        info[f"ip{n}_name"]    = _get(f"v2_ip{n}_name", upper=True)
+        info[f"ip{n}_role"]    = _get(f"v2_ip{n}_role", default="Intended Father")
+        info[f"ip{n}_country"] = _get(f"v2_ip{n}_country",
+                                      default="People's Republic of China")
+        info[f"ip{n}_passport"] = _get(f"v2_ip{n}_passport")
+
+    # Case
+    info["child_last_name"] = _get("v2_child_last_name", upper=True)
+    info["surrogate_name"]  = _get("v2_surrogate_name",  upper=True)
+    info["surrogate_dob"]   = _get("v2_surrogate_dob")
+    info["due_date"]        = _get("v2_due_date")
+    info["hospital_name"]   = _get("v2_hospital_name",
+                                   default="Loma Linda University Medical Center")
+    info["hospital_city"]   = _get("v2_hospital_city",  default="Loma Linda")
+    info["hospital_state"]  = _get("v2_hospital_state", default="California")
+    info["attorney_name"]   = _get("v2_attorney_name",  default="Xuelan Fang")
+    info["agency_name"]     = _get("v2_agency_name")
+
+    # Agents — build the full ID phrase here
+    for n in range(1, num_agents + 1):
+        info[f"agent{n}_name"] = _get(f"v2_agent{n}_name", upper=True)
+        info[f"agent{n}_dob"]  = _get(f"v2_agent{n}_dob")
+        id_choice = _get(f"v2_agent{n}_id_type",
+                         default=_ID_LABELS[0])
+        phrase = ID_TYPES.get(id_choice)
+        if phrase is None:
+            phrase = _get(f"v2_agent{n}_id_custom")
+        id_num = _get(f"v2_agent{n}_id_number")
+        info[f"agent{n}_id"] = f"{phrase} {id_num}".strip() if phrase else id_num
+
+    errors = validate_v2(num_ips, num_agents, info)
     if errors:
         st.session_state["result"] = {"errors": errors}
         return
 
-    photos = {}
-    for agent_num in (1, 2, 3):
-        f = st.session_state.get(f"photo_agent{agent_num}")
+    photos: dict = {}
+    for n in range(1, num_ips + 1):
+        f = st.session_state.get(f"v2_photo_ip{n}")
         if f is not None:
-            photos[f"agent{agent_num}"] = f.read()
-    for ip_num in (1, 2):
-        f = st.session_state.get(f"photo_ip{ip_num}")
+            photos[f"ip{n}"] = f.read()
+    for n in range(1, num_agents + 1):
+        f = st.session_state.get(f"v2_photo_agent{n}")
         if f is not None:
-            photos[f"ip{ip_num}"] = f.read()
+            photos[f"agent{n}"] = f.read()
 
     try:
-        doc_bytes, count = generate_2ip_poa_bytes(tpl, info, photos=photos)
-        filename = make_filename_2ip(info)
-        st.session_state["result"] = {"doc_bytes": doc_bytes, "filename": filename, "count": count}
+        doc_bytes, count = generate_poa_v2_bytes(
+            tpl, num_ips, num_agents, info, photos=photos or None
+        )
+        filename = make_filename_v2(num_ips, info)
+        st.session_state["result"] = {
+            "doc_bytes": doc_bytes, "filename": filename, "count": count
+        }
     except Exception as exc:
         st.session_state["result"] = {"error": str(exc)}
 
 
-# ---- Shared result renderer ------------------------------------------------
+# ---------------------------------------------------------------------------
+# Shared result renderer
+# ---------------------------------------------------------------------------
 
 def _render_result():
     result = st.session_state.get("result")
@@ -400,36 +365,40 @@ def _render_result():
         n = result["count"]
         st.success(f"Document ready — {n} field replacement{'s' if n != 1 else ''} made.")
         st.download_button(
-            label=f"Download: {result['filename']}",
+            label=f"⬇  {result['filename']}",
             data=result["doc_bytes"],
             file_name=result["filename"],
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             type="primary",
             use_container_width=True,
         )
-        st.caption("Review after downloading: spelling, dates, and any formatting.")
+        st.caption("Review the document after downloading: dates, spelling, and formatting.")
 
 
 # ---------------------------------------------------------------------------
-# Tab 2 — Batch CSV  (1-IP cases only)
+# Tab 2 — Batch CSV  (legacy 1-IP / 1-agent)
 # ---------------------------------------------------------------------------
 
 def render_batch_tab():
-    if not get_template_bytes("tpl1"):
-        st.warning("Upload the 1-IP + 1-Agent template in the sidebar first.")
+    tpl = get_template_bytes(1, 1)
+    if not tpl:
+        st.warning("Upload the **1 IP / 1 Agent** template in the sidebar first.")
         return
 
     st.subheader("Batch Generation via CSV")
-    st.caption("For single-principal cases only. Use the Single Case tab for 2-IP cases.")
+    st.caption("Single-principal cases only. Use the Single Case tab for other combos.")
 
-    with st.expander("Step 1 — Download the CSV template, fill it in Excel", expanded=True):
-        st.caption("One row per case. The first row is a pre-filled example.")
-        st.download_button("Download CSV Template", data=_build_sample_csv(),
-                           file_name="poa_cases_template.csv", mime="text/csv")
+    with st.expander("Step 1 — Download the CSV template", expanded=True):
+        st.download_button(
+            "Download CSV Template",
+            data=_build_sample_csv(),
+            file_name="poa_cases_template.csv",
+            mime="text/csv",
+        )
 
     st.markdown("**Step 2 — Upload your completed CSV**")
-    uploaded_csv = st.file_uploader("Upload CSV", type=["csv"], label_visibility="collapsed")
-
+    uploaded_csv = st.file_uploader("Upload CSV", type=["csv"],
+                                    label_visibility="collapsed")
     if not uploaded_csv:
         return
 
@@ -440,21 +409,21 @@ def render_batch_tab():
             st.caption(f"Row {row_num}: {msg}")
 
     if not cases:
-        st.error("No valid cases found in the CSV.")
+        st.error("No valid cases found.")
         return
 
     st.success(f"{len(cases)} case(s) found.")
     preview_df = pd.DataFrame(cases)
     show = ["principal_name", "principal_passport", "surrogate_name", "agent_name", "due_date"]
-    st.dataframe(preview_df[[c for c in show if c in preview_df.columns]], use_container_width=True)
+    st.dataframe(preview_df[[c for c in show if c in preview_df.columns]],
+                 use_container_width=True)
 
     if st.button("Generate All Documents", type="primary", use_container_width=True):
-        _run_batch(get_template_bytes("tpl1"), cases)
+        _run_batch(tpl, cases)
 
 
 def _run_batch(tpl: bytes, cases: list):
-    from poa_generator import generate_poa_bytes
-    progress = st.progress(0, text="Generating...")
+    progress = st.progress(0, text="Generating…")
     zip_buf = io.BytesIO()
     failed = []
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:

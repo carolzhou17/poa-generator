@@ -591,3 +591,142 @@ def load_cases_from_csv(csv_bytes: bytes) -> tuple:
         else:
             cases.append(clean)
     return cases, errors
+
+
+# ---------------------------------------------------------------------------
+# V2: Unified generator for all 6 combos (1–2 IPs × 1–3 agents)
+# ---------------------------------------------------------------------------
+
+COMMON_FIELDS_V2 = [
+    {"key": "child_last_name","label": "Child Last Name",          "template_value": "CHILDNAME",    "required": True,  "to_upper": True,  "default": ""},
+    {"key": "surrogate_name", "label": "Surrogate Full Name",       "template_value": "SURROGATENAME","required": True,  "to_upper": True,  "default": ""},
+    {"key": "surrogate_dob",  "label": "Surrogate Date of Birth",   "template_value": "SURROGATEDOB", "required": True,  "to_upper": False, "default": ""},
+    {"key": "due_date",       "label": "Due Date",                  "template_value": "DUEDATE",      "required": True,  "to_upper": False, "default": ""},
+    {"key": "hospital_name",  "label": "Hospital Name",             "template_value": "HOSPITALNAME", "required": False, "to_upper": False, "default": "Loma Linda University Medical Center"},
+    {"key": "hospital_city",  "label": "Hospital City",             "template_value": "HOSPITALCITY", "required": False, "to_upper": False, "default": "Loma Linda"},
+    {"key": "hospital_state", "label": "Hospital State",            "template_value": "HOSPITALSTATE","required": False, "to_upper": False, "default": "California"},
+    {"key": "attorney_name",  "label": "Handling Attorney",         "template_value": "ATTORNEYNAME", "required": False, "to_upper": False, "default": "Xuelan Fang"},
+    {"key": "agency_name",    "label": "Agency (filename only)",    "template_value": "",             "required": False, "to_upper": False, "default": ""},
+]
+
+_IP_FTPL = [
+    {"key": "ip{n}_name",    "label": "IP {n} Full Name",        "tval": "IP{N}NAME",    "required": True,  "upper": True,  "default": ""},
+    {"key": "ip{n}_role",    "label": "IP {n} Role",             "tval": "IP{N}ROLE",    "required": False, "upper": False, "default": "Intended Father"},
+    {"key": "ip{n}_country", "label": "IP {n} Passport Country", "tval": "IP{N}COUNTRY", "required": True,  "upper": False, "default": "People’s Republic of China"},
+    {"key": "ip{n}_passport","label": "IP {n} Passport Number",  "tval": "IP{N}PASSPORT","required": True,  "upper": False, "default": ""},
+]
+
+_AGENT_FTPL = [
+    {"key": "agent{n}_name","label": "Agent {n} Full Name",      "tval": "AGENT{N}NAME","required": True,  "upper": True,  "default": ""},
+    {"key": "agent{n}_dob", "label": "Agent {n} Date of Birth",  "tval": "AGENT{N}DOB", "required": True,  "upper": False, "default": ""},
+    {"key": "agent{n}_id",  "label": "Agent {n} ID (full phrase)","tval": "AGENT{N}ID",  "required": True,  "upper": False, "default": ""},
+]
+
+
+def get_fields_v2(num_ips: int, num_agents: int) -> list:
+    """Return complete field list for the given combo."""
+    fields = []
+    for n in range(1, num_ips + 1):
+        for t in _IP_FTPL:
+            fields.append({
+                "key":            t["key"].format(n=n),
+                "label":          t["label"].format(n=n),
+                "template_value": t["tval"].replace("{N}", str(n)),
+                "required":       t["required"],
+                "to_upper":       t["upper"],
+                "default":        t["default"],
+            })
+    fields.extend(COMMON_FIELDS_V2)
+    for n in range(1, num_agents + 1):
+        for t in _AGENT_FTPL:
+            fields.append({
+                "key":            t["key"].format(n=n),
+                "label":          t["label"].format(n=n),
+                "template_value": t["tval"].replace("{N}", str(n)),
+                "required":       t["required"],
+                "to_upper":       t["upper"],
+                "default":        t["default"],
+            })
+    return fields
+
+
+# Photo slot positions (index into _find_image_paragraphs result) for known combos.
+_V2_PHOTO_SLOTS = {
+    (1, 1): {"ip1": [0], "agent1": [1]},
+    (2, 3): {"agent1": [0], "agent2": [1], "agent3": [2], "ip1": [3, 4], "ip2": [5, 6]},
+}
+
+
+def generate_poa_v2_bytes(
+    template_bytes: bytes,
+    num_ips: int,
+    num_agents: int,
+    info: dict,
+    photos: Optional[dict] = None,
+) -> tuple:
+    """
+    Unified POA generator for all 6 combos.
+
+    info keys:  ip{n}_name, ip{n}_role, ip{n}_country, ip{n}_passport  (n = 1..num_ips)
+                child_last_name, surrogate_name, surrogate_dob, due_date,
+                hospital_name, hospital_city, hospital_state, attorney_name, agency_name
+                agent{n}_name, agent{n}_dob, agent{n}_id              (n = 1..num_agents)
+
+    agent{n}_id = full ID phrase, e.g. "California's Driver License No. Y1234567"
+
+    photos: dict mapping "ip1", "ip2", "agent1", "agent2", "agent3" → bytes (optional).
+    Returns (docx_bytes, replacement_count).
+    """
+    doc = Document(io.BytesIO(template_bytes))
+    total = 0
+
+    for field in get_fields_v2(num_ips, num_agents):
+        tval = field["template_value"]
+        if not tval:
+            continue
+        value = info.get(field["key"], "").strip()
+        if field["to_upper"]:
+            value = value.upper()
+        if not value:
+            value = field["default"]
+        if value:
+            total += _replace_in_doc(doc, tval, value)
+
+    if photos:
+        slots = _V2_PHOTO_SLOTS.get((num_ips, num_agents))
+        if slots:
+            img_paras = _find_image_paragraphs(doc)
+            for person, slot_list in slots.items():
+                pbytes = photos.get(person)
+                if pbytes:
+                    for s in slot_list:
+                        if s < len(img_paras):
+                            _replace_image(doc, img_paras[s], pbytes)
+
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue(), total
+
+
+def validate_v2(num_ips: int, num_agents: int, info: dict) -> list:
+    """Return list of error strings. Empty = valid."""
+    return [
+        f"'{f['label']}' is required."
+        for f in get_fields_v2(num_ips, num_agents)
+        if f["required"] and not info.get(f["key"], "").strip()
+    ]
+
+
+def make_filename_v2(num_ips: int, info: dict) -> str:
+    if num_ips == 1:
+        ips = (info.get("ip1_name", "IP1") or "IP1").split()[-1]
+    else:
+        a = (info.get("ip1_name", "IP1") or "IP1").split()[-1]
+        b = (info.get("ip2_name", "IP2") or "IP2").split()[-1]
+        ips = f"{a} & {b}"
+    sur = (info.get("surrogate_name", "Surrogate") or "Surrogate").split()[-1]
+    agency = info.get("agency_name", "").strip()
+    parts = [f"POA - {ips} & {sur}"]
+    if agency:
+        parts.append(agency)
+    return " - ".join(parts) + ".docx"
