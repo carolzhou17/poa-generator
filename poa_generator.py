@@ -5,208 +5,223 @@ Handles field definitions, Word replacement, CSV parsing, and document generatio
 
 import io
 import csv
-from typing import Optional
+from typing import Optional, List
 from docx import Document
 from docx.oxml.ns import qn
 
 
 # ---------------------------------------------------------------------------
-# Field definitions  (drives both the web form and the CSV column headers)
+# Field definitions
 # ---------------------------------------------------------------------------
-# Each dict describes one input field.
-#   key            — internal identifier, also used as CSV column name
-#   label          — human-readable label shown in the form
-#   section        — groups fields together in the UI
-#   template_value — the placeholder text that exists in the original template
-#   required       — whether the field must be filled in
-#   to_upper       — auto-convert to ALL CAPS
-#   default        — pre-filled default value (empty string = no default)
-#   help           — hint shown below the input box
+# per_principal=True  → belongs to one principal (repeated for each IP)
+# per_principal=False → shared across the whole case (surrogate, agent, etc.)
 
 FIELDS = [
+    # ---- Per-principal fields ----
     {
-        "key":            "principal_name",
-        "label":          "Principal Full Name",
-        "section":        "Principal (Intended Parent)",
-        "template_value": "CHENGFANG SHI",
-        "required":       True,
-        "to_upper":       True,
-        "default":        "",
-        "help":           "ALL CAPS — e.g., JOHN SMITH",
+        "key":           "principal_name",
+        "label":         "Full Name",
+        "section":       "Principal",
+        "template_value":"CHENGFANG SHI",
+        "required":      True,
+        "to_upper":      True,
+        "default":       "",
+        "help":          "ALL CAPS — e.g., JOHN SMITH",
+        "per_principal": True,
     },
     {
-        "key":            "principal_role",
-        "label":          "Principal Role",
-        "section":        "Principal (Intended Parent)",
-        "template_value": "Intended Father",
-        "required":       False,
-        "to_upper":       False,
-        "default":        "Intended Father",
-        "help":           "e.g., Intended Father or Intended Mother",
+        "key":           "principal_role",
+        "label":         "Role",
+        "section":       "Principal",
+        "template_value":"Intended Father",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "Intended Father",
+        "help":          "Intended Father  or  Intended Mother",
+        "per_principal": True,
     },
     {
-        "key":            "passport_country",
-        "label":          "Principal Passport Country",
-        "section":        "Principal (Intended Parent)",
-        "template_value": "People’s Republic of China",   # smart apostrophe
-        "required":       False,
-        "to_upper":       False,
-        "default":        "People’s Republic of China",
-        "help":           "Country as it appears on passport",
+        "key":           "passport_country",
+        "label":         "Passport Country",
+        "section":       "Principal",
+        "template_value":"People’s Republic of China",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "People’s Republic of China",
+        "help":          "Country as it appears on passport",
+        "per_principal": True,
     },
     {
-        "key":            "principal_passport",
-        "label":          "Principal Passport Number",
-        "section":        "Principal (Intended Parent)",
-        "template_value": "ED3297013",
-        "required":       True,
-        "to_upper":       False,
-        "default":        "",
-        "help":           "e.g., ED3297013",
+        "key":           "principal_passport",
+        "label":         "Passport Number",
+        "section":       "Principal",
+        "template_value":"ED3297013",
+        "required":      True,
+        "to_upper":      False,
+        "default":       "",
+        "help":          "e.g., ED3297013",
+        "per_principal": True,
+    },
+
+    # ---- Shared case fields ----
+    {
+        "key":           "child_last_name",
+        "label":         "Child Last Name",
+        "section":       "Child",
+        "template_value":"SHI",
+        "required":      True,
+        "to_upper":      True,
+        "default":       "",
+        "help":          "Will appear as 'infant CHILD [LAST NAME]'",
+        "per_principal": False,
     },
     {
-        "key":            "child_last_name",
-        "label":          "Child Last Name",
-        "section":        "Child",
-        "template_value": "SHI",          # used inside "CHILD SHI"
-        "required":       True,
-        "to_upper":       True,
-        "default":        "",
-        "help":           "Will appear as 'infant CHILD [LAST NAME]'",
+        "key":           "surrogate_name",
+        "label":         "Surrogate Full Name",
+        "section":       "Surrogate",
+        "template_value":"SELENA MARIA AISPURO",
+        "required":      True,
+        "to_upper":      True,
+        "default":       "",
+        "help":          "ALL CAPS",
+        "per_principal": False,
     },
     {
-        "key":            "surrogate_name",
-        "label":          "Surrogate Full Name",
-        "section":        "Surrogate",
-        "template_value": "SELENA MARIA AISPURO",
-        "required":       True,
-        "to_upper":       True,
-        "default":        "",
-        "help":           "ALL CAPS — e.g., JANE DOE",
+        "key":           "surrogate_dob",
+        "label":         "Surrogate Date of Birth",
+        "section":       "Surrogate",
+        "template_value":"May 22, 1996",
+        "required":      True,
+        "to_upper":      False,
+        "default":       "",
+        "help":          "e.g., May 22, 1996",
+        "per_principal": False,
     },
     {
-        "key":            "surrogate_dob",
-        "label":          "Surrogate Date of Birth",
-        "section":        "Surrogate",
-        "template_value": "May 22, 1996",
-        "required":       True,
-        "to_upper":       False,
-        "default":        "",
-        "help":           "e.g., May 22, 1996",
+        "key":           "due_date",
+        "label":         "Due Date",
+        "section":       "Birth Details",
+        "template_value":"December 4, 2025",
+        "required":      True,
+        "to_upper":      False,
+        "default":       "",
+        "help":          "e.g., March 15, 2026",
+        "per_principal": False,
     },
     {
-        "key":            "due_date",
-        "label":          "Due Date",
-        "section":        "Birth Details",
-        "template_value": "December 4, 2025",
-        "required":       True,
-        "to_upper":       False,
-        "default":        "",
-        "help":           "e.g., March 15, 2026",
+        "key":           "hospital_name",
+        "label":         "Hospital Name",
+        "section":       "Birth Details",
+        "template_value":"Loma Linda University Medical Center",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "Loma Linda University Medical Center",
+        "help":          "Full hospital name",
+        "per_principal": False,
     },
     {
-        "key":            "hospital_name",
-        "label":          "Hospital Name",
-        "section":        "Birth Details",
-        "template_value": "Loma Linda University Medical Center",
-        "required":       False,
-        "to_upper":       False,
-        "default":        "Loma Linda University Medical Center",
-        "help":           "Full hospital name",
+        "key":           "hospital_city",
+        "label":         "Hospital City",
+        "section":       "Birth Details",
+        "template_value":"Loma Linda",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "Loma Linda",
+        "help":          "",
+        "per_principal": False,
     },
     {
-        "key":            "hospital_city",
-        "label":          "Hospital City",
-        "section":        "Birth Details",
-        "template_value": "Loma Linda",
-        "required":       False,
-        "to_upper":       False,
-        "default":        "Loma Linda",
-        "help":           "",
+        "key":           "hospital_state",
+        "label":         "Hospital State",
+        "section":       "Birth Details",
+        "template_value":"California",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "California",
+        "help":          "",
+        "per_principal": False,
     },
     {
-        "key":            "hospital_state",
-        "label":          "Hospital State",
-        "section":        "Birth Details",
-        "template_value": "California",
-        "required":       False,
-        "to_upper":       False,
-        "default":        "California",
-        "help":           "",
+        "key":           "agent_name",
+        "label":         "Agent / Attorney-in-Fact Full Name",
+        "section":       "Agent",
+        "template_value":"JIAJIA GAO",
+        "required":      True,
+        "to_upper":      True,
+        "default":       "",
+        "help":          "ALL CAPS",
+        "per_principal": False,
     },
     {
-        "key":            "agent_name",
-        "label":          "Agent / Attorney-in-Fact Full Name",
-        "section":        "Agent (Attorney-in-Fact)",
-        "template_value": "JIAJIA GAO",
-        "required":       True,
-        "to_upper":       True,
-        "default":        "",
-        "help":           "ALL CAPS — person authorized to act on principal's behalf",
+        "key":           "agent_dob",
+        "label":         "Agent Date of Birth",
+        "section":       "Agent",
+        "template_value":"02/24/1986",
+        "required":      True,
+        "to_upper":      False,
+        "default":       "",
+        "help":          "e.g., 02/24/1986",
+        "per_principal": False,
     },
     {
-        "key":            "agent_dob",
-        "label":          "Agent Date of Birth",
-        "section":        "Agent (Attorney-in-Fact)",
-        "template_value": "02/24/1986",
-        "required":       True,
-        "to_upper":       False,
-        "default":        "",
-        "help":           "e.g., 02/24/1986",
+        "key":           "agent_passport",
+        "label":         "Agent Passport Number",
+        "section":       "Agent",
+        "template_value":"EJ4979964",
+        "required":      True,
+        "to_upper":      False,
+        "default":       "",
+        "help":          "e.g., EJ4979964",
+        "per_principal": False,
     },
     {
-        "key":            "agent_passport",
-        "label":          "Agent Passport Number",
-        "section":        "Agent (Attorney-in-Fact)",
-        "template_value": "EJ4979964",
-        "required":       True,
-        "to_upper":       False,
-        "default":        "",
-        "help":           "e.g., EJ4979964",
+        "key":           "agent_pronoun",
+        "label":         "Agent Pronoun",
+        "section":       "Agent",
+        "template_value":"her",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "her",
+        "help":          "her / his / their",
+        "per_principal": False,
     },
     {
-        "key":            "agent_pronoun",
-        "label":          "Agent Pronoun",
-        "section":        "Agent (Attorney-in-Fact)",
-        "template_value": "her",
-        "required":       False,
-        "to_upper":       False,
-        "default":        "her",
-        "help":           "her / his / their  — used in document body to refer to the agent",
+        "key":           "attorney_name",
+        "label":         "Handling Attorney",
+        "section":       "Firm",
+        "template_value":"Xuelan Fang",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "Xuelan Fang",
+        "help":          "",
+        "per_principal": False,
     },
     {
-        "key":            "attorney_name",
-        "label":          "Handling Attorney",
-        "section":        "Firm",
-        "template_value": "Xuelan Fang",
-        "required":       False,
-        "to_upper":       False,
-        "default":        "Xuelan Fang",
-        "help":           "Attorney at Tsong Law Group handling this case",
-    },
-    {
-        "key":            "agency_name",
-        "label":          "Fertility Agency (optional, used in filename)",
-        "section":        "Firm",
-        "template_value": "",
-        "required":       False,
-        "to_upper":       False,
-        "default":        "",
-        "help":           "e.g., C&T Fertility Consultant",
+        "key":           "agency_name",
+        "label":         "Fertility Agency (for filename)",
+        "section":       "Firm",
+        "template_value":"",
+        "required":      False,
+        "to_upper":      False,
+        "default":       "",
+        "help":          "e.g., C&T Fertility Consultant",
+        "per_principal": False,
     },
 ]
 
-# Replacement order matters: specific strings before the substrings they contain.
-# "Loma Linda University Medical Center" must be replaced before plain "Loma Linda".
+PRINCIPAL_FIELDS = [f for f in FIELDS if f["per_principal"]]
+CASE_FIELDS      = [f for f in FIELDS if not f["per_principal"]]
+
+# Replacement order: specific strings before the substrings they contain.
 REPLACEMENT_ORDER = [
-    "hospital_name",
+    "hospital_name",       # "Loma Linda University Medical Center" before "Loma Linda"
     "hospital_city",
     "hospital_state",
     "due_date",
     "surrogate_dob",
     "agent_dob",
     "principal_name",
-    "child_last_name",   # handled specially — replaces "CHILD SHI" not just "SHI"
+    "child_last_name",     # special: replaces "CHILD SHI", not just "SHI"
     "surrogate_name",
     "agent_name",
     "attorney_name",
@@ -221,20 +236,14 @@ REPLACEMENT_ORDER = [
 # ---------------------------------------------------------------------------
 # Low-level Word replacement engine
 # ---------------------------------------------------------------------------
-# Word stores paragraph text split across many tiny "runs" in its XML.
-# A single word like "02/24/1986" may be 7 separate fragments.
-# These functions stitch them back together for reliable find-and-replace.
 
 def _replace_once(para, old: str, new: str) -> bool:
-    """Replace first occurrence of old across fragmented runs. Returns True if replaced."""
     full = "".join(r.text for r in para.runs)
     if old not in full:
         return False
-
     idx, end_idx = full.index(old), full.index(old) + len(old)
     pos = 0
     s_run = s_off = e_run = e_off = None
-
     for i, run in enumerate(para.runs):
         run_end = pos + len(run.text)
         if s_run is None and run_end > idx:
@@ -243,10 +252,8 @@ def _replace_once(para, old: str, new: str) -> bool:
             e_run, e_off = i, end_idx - pos
             break
         pos += len(run.text)
-
     if s_run is None or e_run is None:
         return False
-
     runs = list(para.runs)
     if s_run == e_run:
         r = runs[s_run]
@@ -256,7 +263,6 @@ def _replace_once(para, old: str, new: str) -> bool:
         for i in range(s_run + 1, e_run):
             runs[i].text = ""
         runs[e_run].text = runs[e_run].text[e_off:]
-
     return True
 
 
@@ -284,19 +290,13 @@ def _replace_in_doc(doc, old: str, new: str) -> int:
 # ---------------------------------------------------------------------------
 # Image replacement
 # ---------------------------------------------------------------------------
-# The template already has two image slots (embedded in the .docx XML):
-#   slot 0 — Principal's passport / ID
-#   slot 1 — Agent's passport / ID
-# We replace the image data in-place so all sizing/positioning is preserved.
 
 def _find_image_paragraphs(doc) -> list:
-    """Return paragraphs that contain an inline image, in document order."""
     return [p for p in doc.paragraphs
             if p._element.find('.//' + qn('a:blip')) is not None]
 
 
 def _replace_image(doc, para, new_bytes: bytes) -> bool:
-    """Swap the image in *para* for the bytes in *new_bytes*."""
     blip = para._element.find('.//' + qn('a:blip'))
     if blip is None:
         return False
@@ -308,24 +308,59 @@ def _replace_image(doc, para, new_bytes: bytes) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Document merging
+# ---------------------------------------------------------------------------
+
+def _merge_documents(doc_bytes_list: List[bytes]) -> bytes:
+    """Combine multiple .docx files into one, each starting on a new page."""
+    if len(doc_bytes_list) == 1:
+        return doc_bytes_list[0]
+
+    from docxcompose.composer import Composer
+
+    base = Document(io.BytesIO(doc_bytes_list[0]))
+    composer = Composer(base)
+
+    for extra_bytes in doc_bytes_list[1:]:
+        src = Document(io.BytesIO(extra_bytes))
+        composer.append(src)
+
+    out = io.BytesIO()
+    composer.save(out)
+    return out.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def validate_case(info: dict) -> list:
-    """Return a list of error strings. Empty list means the case is valid."""
+def validate_case(case_info: dict, principals: Optional[List[dict]] = None) -> list:
+    """Return list of error strings. Empty = valid."""
     errors = []
-    for field in FIELDS:
-        if field["required"] and not info.get(field["key"], "").strip():
+    # Validate shared case fields
+    for field in CASE_FIELDS:
+        if field["required"] and not case_info.get(field["key"], "").strip():
             errors.append(f"'{field['label']}' is required.")
+    # Validate each principal
+    if principals:
+        for i, p in enumerate(principals, 1):
+            for field in PRINCIPAL_FIELDS:
+                if field["required"] and not p.get(field["key"], "").strip():
+                    errors.append(f"Principal {i}: '{field['label']}' is required.")
     return errors
 
 
-def make_filename(info: dict) -> str:
-    """Build a descriptive filename for the generated document."""
-    principal_last = info.get("principal_name", "Client").split()[-1]
-    surrogate_last = info.get("surrogate_name", "Surrogate").split()[-1]
-    agency = info.get("agency_name", "").strip()
-    parts = [f"POA - {principal_last} & {surrogate_last}"]
+def make_filename(case_info: dict, principals: Optional[List[dict]] = None) -> str:
+    if principals:
+        last_names = [p.get("principal_name", "Client").split()[-1] for p in principals]
+    else:
+        last_names = [case_info.get("principal_name", "Client").split()[-1]]
+
+    surrogate_last = case_info.get("surrogate_name", "Surrogate").split()[-1]
+    agency = case_info.get("agency_name", "").strip()
+
+    principals_str = " & ".join(last_names)
+    parts = [f"POA - {principals_str} & {surrogate_last}"]
     if agency:
         parts.append(agency)
     return " - ".join(parts) + ".docx"
@@ -337,43 +372,26 @@ def generate_poa_bytes(
     principal_photo: Optional[bytes] = None,
     agent_photo: Optional[bytes] = None,
 ) -> tuple:
-    """
-    Generate a filled POA document.
-
-    Args:
-        template_bytes:  Raw bytes of the template .docx file.
-        info:            Dict mapping field keys to user-provided values.
-        principal_photo: Optional image bytes for the principal's ID/passport.
-        agent_photo:     Optional image bytes for the agent's ID/passport.
-
-    Returns:
-        (docx_bytes, replacement_count)
-    """
+    """Generate one POA document (single principal). Returns (bytes, count)."""
     doc = Document(io.BytesIO(template_bytes))
     total = 0
 
-    # --- Text replacements ---
     for key in REPLACEMENT_ORDER:
         field = next((f for f in FIELDS if f["key"] == key), None)
         if field is None:
             continue
-
         value = info.get(key, "").strip()
         if field["to_upper"]:
             value = value.upper()
         if not value:
             value = field["default"]
-
         template_val = field["template_value"]
 
         if key == "child_last_name":
-            old = f"CHILD {field['template_value']}"
-            new = f"CHILD {value}"
-            total += _replace_in_doc(doc, old, new)
+            total += _replace_in_doc(doc, f"CHILD {template_val}", f"CHILD {value}")
         else:
             total += _replace_in_doc(doc, template_val, value)
 
-    # --- Photo replacements ---
     img_paras = _find_image_paragraphs(doc)
     if principal_photo and len(img_paras) > 0:
         _replace_image(doc, img_paras[0], principal_photo)
@@ -385,50 +403,63 @@ def generate_poa_bytes(
     return out.getvalue(), total
 
 
+def generate_multi_poa_bytes(
+    template_bytes: bytes,
+    case_info: dict,
+    principals: List[dict],
+    agent_photo: Optional[bytes] = None,
+) -> tuple:
+    """
+    Generate a combined POA document for one or more principals.
+
+    principals: list of dicts, each with per-principal fields plus an optional
+                "photo" key (bytes) for that principal's ID image.
+
+    Returns: (combined_docx_bytes, total_replacement_count)
+    """
+    doc_bytes_list = []
+    total = 0
+
+    for principal in principals:
+        # Merge shared case fields with this principal's fields
+        full_info = {**case_info, **{k: v for k, v in principal.items() if k != "photo"}}
+        principal_photo = principal.get("photo")
+
+        doc_bytes, count = generate_poa_bytes(
+            template_bytes,
+            full_info,
+            principal_photo=principal_photo,
+            agent_photo=agent_photo,
+        )
+        doc_bytes_list.append(doc_bytes)
+        total += count
+
+    combined = _merge_documents(doc_bytes_list)
+    return combined, total
+
+
 def get_csv_columns() -> list:
-    """Return CSV column names in the correct order (one per field)."""
     return [f["key"] for f in FIELDS]
 
 
-def get_empty_row() -> dict:
-    """Return a dict with all field keys set to their default values."""
-    return {f["key"]: f["default"] for f in FIELDS}
-
-
 def get_example_row() -> dict:
-    """Return the Shi/Aispuro case as an example CSV row."""
     return {f["key"]: f["template_value"] for f in FIELDS}
 
 
 def load_cases_from_csv(csv_bytes: bytes) -> tuple:
-    """
-    Parse a CSV file into a list of case dicts.
-
-    Returns:
-        (cases, errors)
-        cases  — list of dicts, one per valid row
-        errors — list of (row_number, message) for bad rows
-    """
-    text = csv_bytes.decode("utf-8-sig")   # utf-8-sig handles Excel's BOM
+    text = csv_bytes.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
-
-    expected_columns = set(get_csv_columns())
+    expected = set(get_csv_columns())
     cases, errors = [], []
-
-    for i, row in enumerate(reader, start=2):   # row 1 = header
-        # Strip whitespace from all values
+    for i, row in enumerate(reader, start=2):
         clean = {k.strip(): v.strip() for k, v in row.items()}
-
-        # Check for unexpected columns (just warn, don't fail)
-        missing = expected_columns - set(clean.keys())
+        missing = expected - set(clean.keys())
         if missing:
             errors.append((i, f"Missing columns: {', '.join(sorted(missing))}"))
             continue
-
-        row_errors = validate_case(clean)
-        if row_errors:
-            errors.append((i, "; ".join(row_errors)))
+        errs = validate_case(clean)
+        if errs:
+            errors.append((i, "; ".join(errs)))
         else:
             cases.append(clean)
-
     return cases, errors
