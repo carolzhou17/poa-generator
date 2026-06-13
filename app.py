@@ -7,8 +7,11 @@ import csv
 import io
 import os
 import zipfile
-import streamlit as st
+from typing import Optional
+
 import pandas as pd
+import streamlit as st
+
 from poa_generator import (
     FIELDS,
     generate_poa_bytes,
@@ -17,7 +20,6 @@ from poa_generator import (
     load_cases_from_csv,
     get_csv_columns,
     get_example_row,
-    get_empty_row,
 )
 
 # ---------------------------------------------------------------------------
@@ -32,7 +34,6 @@ st.set_page_config(
 
 # ---------------------------------------------------------------------------
 # Template loading
-# (looks for poa_template.docx next to this script, then OneDrive fallback)
 # ---------------------------------------------------------------------------
 
 ONEDRIVE_TEMPLATE = (
@@ -40,11 +41,10 @@ ONEDRIVE_TEMPLATE = (
     r"\Ralph Tsong's files - Marketing\POA Pilot"
     r"\Power of Attorney - Shi & Aispuro - C&T Fertility Consultant.docx"
 )
-LOCAL_TEMPLATE = os.path.join(os.path.dirname(__file__), "poa_template.docx")
+LOCAL_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poa_template.docx")
 
 
-def load_default_template() -> bytes | None:
-    """Try to load the template from local file first, then OneDrive."""
+def load_default_template() -> Optional[bytes]:
     for path in [LOCAL_TEMPLATE, ONEDRIVE_TEMPLATE]:
         if os.path.exists(path):
             with open(path, "rb") as f:
@@ -52,18 +52,13 @@ def load_default_template() -> bytes | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Shared state helpers
-# ---------------------------------------------------------------------------
-
-def get_template_bytes() -> bytes | None:
-    """Return template bytes from session state or default locations."""
+def get_template_bytes() -> Optional[bytes]:
     if "template_bytes" in st.session_state:
         return st.session_state["template_bytes"]
-    default = load_default_template()
-    if default:
-        st.session_state["template_bytes"] = default
-    return default
+    tpl = load_default_template()
+    if tpl:
+        st.session_state["template_bytes"] = tpl
+    return tpl
 
 
 def group_fields_by_section() -> dict:
@@ -74,98 +69,66 @@ def group_fields_by_section() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# UI components
+# Sidebar — template management
 # ---------------------------------------------------------------------------
 
-def render_header():
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("POA Document Generator")
-        st.caption("Tsong Law Group, A.P.C.")
-    with col2:
-        st.write("")
-        st.write("")
-        st.markdown("**⚖️ Tsong Law Group**")
-
-
-def render_template_sidebar():
+def render_sidebar():
     with st.sidebar:
         st.header("Template")
+
         tpl = get_template_bytes()
         if tpl:
-            st.success(f"Template loaded ({len(tpl):,} bytes)")
+            st.success(f"Template ready ({len(tpl):,} bytes)")
         else:
-            st.warning("No template found. Please upload one.")
+            st.error("No template loaded — upload one below before generating.")
 
-        uploaded = st.file_uploader(
-            "Upload a different template (.docx)",
-            type=["docx"],
-            help="Upload your POA template Word document. "
-                 "Field values in the template will be replaced with the case data.",
-        )
+        uploaded = st.file_uploader("Upload POA template (.docx)", type=["docx"])
         if uploaded:
-            st.session_state["template_bytes"] = uploaded.read()
-            st.success("Custom template loaded.")
+            data = uploaded.read()
+            st.session_state["template_bytes"] = data
+            # Clear any previously generated result when a new template is loaded
+            st.session_state.pop("single_result", None)
             st.rerun()
 
         st.divider()
         st.caption(
-            "To update the default template, save your .docx as "
-            "`poa_template.docx` in the same folder as this app."
+            "Upload the file:  \n"
+            "`Power of Attorney - Shi & Aispuro...docx`  \n"
+            "from the POA Pilot folder on OneDrive."
         )
 
 
-def render_form_field(field: dict, prefix: str = "") -> str:
-    """Render a single input field and return its value."""
-    key = prefix + field["key"]
-    default = field["default"]
-    label = field["label"]
-    if field["required"]:
-        label += " *"
-
-    value = st.text_input(
-        label,
-        value=st.session_state.get(key, default),
-        key=key,
-        help=field["help"] or None,
-        placeholder=field["help"] or "",
-    )
-    return value.strip().upper() if field["to_upper"] else value.strip()
-
-
-def collect_form_values(prefix: str = "") -> dict:
-    """Read all field values from the current form state."""
-    return {
-        f["key"]: (
-            st.session_state.get(prefix + f["key"], f["default"]).strip().upper()
-            if f["to_upper"]
-            else st.session_state.get(prefix + f["key"], f["default"]).strip()
-        )
-        for f in FIELDS
-    }
-
-
 # ---------------------------------------------------------------------------
-# Tab 1: Single Case
+# Tab 1 — Single case
 # ---------------------------------------------------------------------------
 
-def render_single_case_tab():
+def render_single_tab():
+    # Show template warning prominently if missing
+    if not get_template_bytes():
+        st.warning("Upload the POA template in the sidebar before generating a document.")
+        return
+
     st.subheader("Enter Case Information")
-    st.caption("Fields marked * are required. Press Tab to move between fields.")
+    st.caption("Fields marked * are required.")
 
     sections = group_fields_by_section()
 
-    with st.form("single_case_form"):
-        cols = st.columns(2)
-        col_idx = 0
-
-        for section_name, fields in sections.items():
-            with cols[col_idx % 2]:
+    with st.form("poa_form", clear_on_submit=False):
+        left, right = st.columns(2)
+        for i, (section_name, fields) in enumerate(sections.items()):
+            col = left if i % 2 == 0 else right
+            with col:
                 st.markdown(f"**{section_name}**")
                 for field in fields:
-                    render_form_field(field, prefix="form_")
+                    label = field["label"] + (" *" if field["required"] else "")
+                    st.text_input(
+                        label,
+                        value=field["default"],
+                        key=f"f_{field['key']}",
+                        help=field["help"] or None,
+                        placeholder=field["help"] or "",
+                    )
                 st.write("")
-            col_idx += 1
 
         submitted = st.form_submit_button(
             "Generate POA Document",
@@ -174,117 +137,124 @@ def render_single_case_tab():
         )
 
     if submitted:
-        _handle_single_generate()
+        _run_single_generate()
+
+    # Always show the download button if a result exists in session state
+    _render_single_result()
 
 
-def _handle_single_generate():
+def _run_single_generate():
+    """Validate, generate, and store result in session state."""
     tpl = get_template_bytes()
     if not tpl:
-        st.error("No template loaded. Upload a template in the sidebar.")
+        st.session_state["single_result"] = {"error": "No template loaded."}
         return
 
-    info = collect_form_values(prefix="form_")
+    # Read field values from session state (set by the form widgets above)
+    info = {}
+    for field in FIELDS:
+        raw = st.session_state.get(f"f_{field['key']}", field["default"]) or ""
+        info[field["key"]] = raw.strip().upper() if field["to_upper"] else raw.strip()
+
     errors = validate_case(info)
-
     if errors:
-        for e in errors:
-            st.error(e)
+        st.session_state["single_result"] = {"errors": errors}
         return
 
-    with st.spinner("Generating document..."):
-        try:
-            doc_bytes, count = generate_poa_bytes(tpl, info)
-            filename = make_filename(info)
-        except Exception as exc:
-            st.error(f"Error generating document: {exc}")
-            return
+    try:
+        doc_bytes, count = generate_poa_bytes(tpl, info)
+        filename = make_filename(info)
+        st.session_state["single_result"] = {
+            "doc_bytes": doc_bytes,
+            "filename": filename,
+            "count": count,
+        }
+    except Exception as exc:
+        st.session_state["single_result"] = {"error": str(exc)}
 
-    st.success(f"Done! {count} field replacements made.")
-    st.download_button(
-        label=f"Download  {filename}",
-        data=doc_bytes,
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        type="primary",
-        use_container_width=True,
-    )
-    st.info(
-        "After downloading, please review:\n"
-        "- Agent pronouns (her / his) if the agent's gender differs from the template\n"
-        "- Notary acknowledgment state\n"
-        "- Any formatting adjustments needed"
-    )
+
+def _render_single_result():
+    """Render errors or download button from session state."""
+    result = st.session_state.get("single_result")
+    if not result:
+        return
+
+    if "error" in result:
+        st.error(result["error"])
+    elif "errors" in result:
+        for e in result["errors"]:
+            st.error(e)
+    else:
+        st.success(f"Document ready — {result['count']} fields replaced.")
+        st.download_button(
+            label=f"Download: {result['filename']}",
+            data=result["doc_bytes"],
+            file_name=result["filename"],
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            type="primary",
+            use_container_width=True,
+        )
+        st.caption(
+            "After downloading, please check: agent pronouns (her/his), "
+            "notary state, and any formatting."
+        )
 
 
 # ---------------------------------------------------------------------------
-# Tab 2: Batch (CSV)
+# Tab 2 — Batch CSV
 # ---------------------------------------------------------------------------
 
 def render_batch_tab():
+    if not get_template_bytes():
+        st.warning("Upload the POA template in the sidebar before generating documents.")
+        return
+
     st.subheader("Batch Generation via CSV")
 
-    # --- Download sample CSV ---
-    with st.expander("Step 1 — Download the CSV template (fill this in Excel)", expanded=True):
-        st.markdown(
-            "Download the CSV template below, open it in Excel, "
-            "fill in one row per case, save as CSV, then upload it here."
+    with st.expander("Step 1 — Download the CSV template, fill it in Excel", expanded=True):
+        st.caption(
+            "Download, open in Excel, add one row per case, save as CSV, then upload below. "
+            "The first row is a pre-filled example — replace it with your real cases."
         )
-        sample_csv = _build_sample_csv()
         st.download_button(
             "Download CSV Template",
-            data=sample_csv,
+            data=_build_sample_csv(),
             file_name="poa_cases_template.csv",
             mime="text/csv",
         )
-        st.caption(
-            "The first row is an example (the Shi/Aispuro case). "
-            "Replace it with your real cases — one row per case."
-        )
 
-    # --- Upload CSV ---
-    st.markdown("**Step 2 — Upload your filled CSV**")
-    uploaded_csv = st.file_uploader(
-        "Upload CSV file",
-        type=["csv"],
-        label_visibility="collapsed",
-    )
+    st.markdown("**Step 2 — Upload your completed CSV**")
+    uploaded_csv = st.file_uploader("Upload CSV", type=["csv"], label_visibility="collapsed")
 
     if not uploaded_csv:
         return
 
-    csv_bytes = uploaded_csv.read()
-    cases, errors = load_cases_from_csv(csv_bytes)
+    cases, parse_errors = load_cases_from_csv(uploaded_csv.read())
 
-    if errors:
-        st.warning(f"{len(errors)} row(s) had issues and were skipped:")
-        for row_num, msg in errors:
-            st.caption(f"  Row {row_num}: {msg}")
+    if parse_errors:
+        st.warning(f"{len(parse_errors)} row(s) skipped:")
+        for row_num, msg in parse_errors:
+            st.caption(f"Row {row_num}: {msg}")
 
     if not cases:
         st.error("No valid cases found in the CSV.")
         return
 
-    st.success(f"{len(cases)} case(s) ready to generate.")
-
-    # Preview table
+    st.success(f"{len(cases)} case(s) found.")
     preview_df = pd.DataFrame(cases)
-    display_cols = ["principal_name", "principal_passport", "surrogate_name", "agent_name", "due_date"]
+    show_cols = ["principal_name", "principal_passport", "surrogate_name", "agent_name", "due_date"]
     st.dataframe(
-        preview_df[[c for c in display_cols if c in preview_df.columns]],
+        preview_df[[c for c in show_cols if c in preview_df.columns]],
         use_container_width=True,
     )
 
-    tpl = get_template_bytes()
-    if not tpl:
-        st.error("No template loaded. Upload a template in the sidebar.")
-        return
-
     if st.button("Generate All Documents", type="primary", use_container_width=True):
-        _handle_batch_generate(tpl, cases)
+        tpl = get_template_bytes()
+        _run_batch_generate(tpl, cases)
 
 
-def _handle_batch_generate(tpl: bytes, cases: list):
-    progress = st.progress(0, text="Generating documents...")
+def _run_batch_generate(tpl: bytes, cases: list):
+    progress = st.progress(0, text="Generating...")
     zip_buf = io.BytesIO()
     failed = []
 
@@ -292,22 +262,20 @@ def _handle_batch_generate(tpl: bytes, cases: list):
         for i, info in enumerate(cases):
             try:
                 doc_bytes, _ = generate_poa_bytes(tpl, info)
-                filename = make_filename(info)
-                zf.writestr(filename, doc_bytes)
+                zf.writestr(make_filename(info), doc_bytes)
             except Exception as exc:
                 failed.append((i + 1, str(exc)))
-            progress.progress((i + 1) / len(cases), text=f"Generating {i + 1}/{len(cases)}...")
+            progress.progress((i + 1) / len(cases), text=f"{i + 1} / {len(cases)}")
 
     progress.empty()
 
-    if failed:
-        for row, msg in failed:
-            st.warning(f"Case {row} failed: {msg}")
+    for row, msg in failed:
+        st.warning(f"Case {row} failed: {msg}")
 
     count = len(cases) - len(failed)
     st.success(f"Generated {count} document(s).")
     st.download_button(
-        label=f"Download All ({count} documents as ZIP)",
+        label=f"Download all {count} documents (ZIP)",
         data=zip_buf.getvalue(),
         file_name="POA_Documents.zip",
         mime="application/zip",
@@ -317,14 +285,11 @@ def _handle_batch_generate(tpl: bytes, cases: list):
 
 
 def _build_sample_csv() -> bytes:
-    """Build a CSV file with column headers + one example row."""
     columns = get_csv_columns()
-    example = get_example_row()
-
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
-    writer.writerow(example)
+    writer.writerow(get_example_row())
     return buf.getvalue().encode("utf-8")
 
 
@@ -333,16 +298,16 @@ def _build_sample_csv() -> bytes:
 # ---------------------------------------------------------------------------
 
 def main():
-    render_header()
-    render_template_sidebar()
+    st.title("POA Document Generator")
+    st.caption("Tsong Law Group, A.P.C.")
     st.divider()
 
-    tab_single, tab_batch = st.tabs(["Single Case", "Batch (CSV)"])
+    render_sidebar()
 
-    with tab_single:
-        render_single_case_tab()
-
-    with tab_batch:
+    tab1, tab2 = st.tabs(["Single Case", "Batch (CSV)"])
+    with tab1:
+        render_single_tab()
+    with tab2:
         render_batch_tab()
 
 

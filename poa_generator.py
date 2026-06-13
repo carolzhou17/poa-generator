@@ -5,6 +5,7 @@ Handles field definitions, Word replacement, CSV parsing, and document generatio
 
 import io
 import csv
+from typing import Optional
 from docx import Document
 
 
