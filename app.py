@@ -98,35 +98,12 @@ _COMBO_LABELS = {
 def render_sidebar():
     with st.sidebar:
         st.header("Templates")
-        st.caption("Run `python prep_all_templates.py` once to generate templates, then upload here.")
-
-        selected_label = st.selectbox(
-            "Upload slot:",
-            list(_COMBO_LABELS.values()),
-            key="sidebar_combo",
-        )
-        combo = next(k for k, v in _COMBO_LABELS.items() if v == selected_label)
-        nip, na = combo
-
-        tpl = get_template_bytes(nip, na)
-        if tpl:
-            st.success(f"Loaded  ({len(tpl):,} bytes)")
+        ready = sum(1 for (i, a) in _COMBO_LABELS if get_template_bytes(i, a))
+        total = len(_COMBO_LABELS)
+        if ready == total:
+            st.success(f"All {total} templates loaded")
         else:
-            st.warning("Not loaded")
-
-        up = st.file_uploader(
-            "Upload .docx",
-            type=["docx"],
-            key=f"up_{_combo_key(nip, na)}",
-            label_visibility="collapsed",
-        )
-        if up is not None:
-            st.session_state[_combo_key(nip, na)] = up.read()
-            st.session_state.pop("result", None)
-            st.rerun()
-
-        st.divider()
-        st.markdown("**All templates:**")
+            st.warning(f"{ready} / {total} templates loaded")
         for (i, a), lbl in _COMBO_LABELS.items():
             icon = "✓" if get_template_bytes(i, a) else "✗"
             st.caption(f"{icon}  {lbl}")
@@ -152,7 +129,7 @@ def render_single_tab():
     tpl = get_template_bytes(num_ips, num_agents)
     label = _COMBO_LABELS[(num_ips, num_agents)]
     if not tpl:
-        st.warning(f"Upload the **{label}** template in the sidebar first.")
+        st.error(f"Template for **{label}** not found. Run `python prep_all_templates.py` in the app folder.")
         return
 
     st.divider()
@@ -382,7 +359,7 @@ def _render_result():
 def render_batch_tab():
     tpl = get_template_bytes(1, 1)
     if not tpl:
-        st.warning("Upload the **1 IP / 1 Agent** template in the sidebar first.")
+        st.error("Template for 1 IP / 1 Agent not found. Run `python prep_all_templates.py`.")
         return
 
     st.subheader("Batch Generation via CSV")

@@ -198,6 +198,10 @@ def p21(nip):
         return "IN WITNESS WHEREOF, I, IP1NAME, have executed this Power of Attorney on ______________."
     return "IN WITNESS WHEREOF, We, IP1NAME AND IP2NAME, have executed this Power of Attorney on ______________."
 
+def p23(nip):
+    if nip == 1: return "IP1NAME"
+    return "IP1NAME AND IP2NAME"
+
 def cell_para4(nip):
     if nip == 1: return "to be born to parent IP1NAME"
     return "to be born to parentS IP1NAME AND IP2NAME"
@@ -262,6 +266,7 @@ def prep(nip, na):
         17: p17(nip, na),
         18: p18(nip, na),
         21: p21(nip),
+        23: p23(nip),
     }
 
     for idx, text in sorted(replacements.items()):
