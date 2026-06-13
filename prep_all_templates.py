@@ -22,8 +22,13 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 
-def _gray_png(width=160, height=200, gray=210):
-    """Return bytes of a minimal valid grayscale PNG (no external libs needed)."""
+def _gray_png(width=440, height=275, gray=220):
+    """
+    Return bytes of a minimal valid grayscale PNG.
+    Default 440x275 (16:10 landscape) matches the ~1.6:1 ID-document
+    image slots in the POA templates — Word stretches images to fill the
+    slot, so matching the aspect ratio prevents distortion.
+    """
     def chunk(tag, data):
         crc = zlib.crc32(tag + data) & 0xFFFFFFFF
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
