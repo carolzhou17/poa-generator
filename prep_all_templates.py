@@ -14,11 +14,28 @@ Outputs (all gitignored / stay local):
 """
 import copy
 import os
-import sys
+import struct
+import zlib
 
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+
+
+def _gray_png(width=160, height=200, gray=210):
+    """Return bytes of a minimal valid grayscale PNG (no external libs needed)."""
+    def chunk(tag, data):
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+    row = b"\x00" + bytes([gray] * width)
+    raw = zlib.compress(row * height)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", raw)
+            + chunk(b"IEND", b""))
+
+PLACEHOLDER_PNG = _gray_png()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OD   = r"C:\Users\zhous\OneDrive - Tsong Law Group\Ralph Tsong's files - Active Cases\Surrogacy Cases"
@@ -290,6 +307,33 @@ def prep(nip, na):
             set_para_text(cell.paragraphs[4], cell_para4(nip))
     except (IndexError, AttributeError):
         pass
+
+    # Replace every embedded photo with a gray placeholder so no client
+    # images are stored in the committed template files.
+    seen_rids = set()
+    for p in doc.paragraphs:
+        for blip in p._element.iter(qn("a:blip")):
+            rid = blip.get(qn("r:embed"))
+            if rid and rid not in seen_rids:
+                try:
+                    doc.part.related_parts[rid]._blob = PLACEHOLDER_PNG
+                    seen_rids.add(rid)
+                except KeyError:
+                    pass
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for blip in p._element.iter(qn("a:blip")):
+                        rid = blip.get(qn("r:embed"))
+                        if rid and rid not in seen_rids:
+                            try:
+                                doc.part.related_parts[rid]._blob = PLACEHOLDER_PNG
+                                seen_rids.add(rid)
+                            except KeyError:
+                                pass
+    if seen_rids:
+        print(f"         ({len(seen_rids)} photo(s) replaced with placeholder)")
 
     doc.save(out)
     print(f"  OK  ({nip}IP/{na}A) -> {os.path.basename(out)}")
