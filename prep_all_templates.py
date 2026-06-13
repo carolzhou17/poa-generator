@@ -213,14 +213,18 @@ def cell_para4(nip):
 
 def set_para_text(para, new_text: str) -> None:
     p = para._p
-    first_r = p.find(qn("w:r"))
+    # Find first run anywhere (including inside w:ins tracked-change elements)
+    first_r = p.find(".//" + qn("w:r"))
     first_rpr = None
     if first_r is not None:
         rpr = first_r.find(qn("w:rPr"))
         if rpr is not None:
             first_rpr = copy.deepcopy(rpr)
-    for r in p.findall(qn("w:r")):
-        p.remove(r)
+    # Remove ALL content children — w:r, w:ins, w:del, w:hyperlink, etc.
+    # Keep only w:pPr (paragraph formatting).
+    for child in list(p):
+        if child.tag != qn("w:pPr"):
+            p.remove(child)
     for i, seg in enumerate(new_text.split("\t")):
         if i > 0:
             tab_r = OxmlElement("w:r")
