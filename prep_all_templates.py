@@ -272,6 +272,10 @@ def prep(nip, na):
         21: p21(nip),
         23: p23(nip),
     }
+    if nip == 2:
+        # Signature block has two individual name lines (in w:ins in source)
+        replacements[24] = "IP1NAME"
+        replacements[27] = "IP2NAME"
 
     for idx, text in sorted(replacements.items()):
         if idx < len(paras):
