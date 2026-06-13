@@ -7,6 +7,7 @@ import io
 import csv
 from typing import Optional
 from docx import Document
+from docx.oxml.ns import qn
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +271,32 @@ def _replace_in_doc(doc, old: str, new: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Image replacement
+# ---------------------------------------------------------------------------
+# The template already has two image slots (embedded in the .docx XML):
+#   slot 0 — Principal's passport / ID
+#   slot 1 — Agent's passport / ID
+# We replace the image data in-place so all sizing/positioning is preserved.
+
+def _find_image_paragraphs(doc) -> list:
+    """Return paragraphs that contain an inline image, in document order."""
+    return [p for p in doc.paragraphs
+            if p._element.find('.//' + qn('a:blip')) is not None]
+
+
+def _replace_image(doc, para, new_bytes: bytes) -> bool:
+    """Swap the image in *para* for the bytes in *new_bytes*."""
+    blip = para._element.find('.//' + qn('a:blip'))
+    if blip is None:
+        return False
+    rid = blip.get(qn('r:embed'))
+    if rid is None:
+        return False
+    doc.part.related_parts[rid]._blob = new_bytes
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -293,13 +320,20 @@ def make_filename(info: dict) -> str:
     return " - ".join(parts) + ".docx"
 
 
-def generate_poa_bytes(template_bytes: bytes, info: dict) -> tuple:
+def generate_poa_bytes(
+    template_bytes: bytes,
+    info: dict,
+    principal_photo: Optional[bytes] = None,
+    agent_photo: Optional[bytes] = None,
+) -> tuple:
     """
     Generate a filled POA document.
 
     Args:
-        template_bytes: The raw bytes of the template .docx file.
-        info: Dict mapping field keys to user-provided values.
+        template_bytes:  Raw bytes of the template .docx file.
+        info:            Dict mapping field keys to user-provided values.
+        principal_photo: Optional image bytes for the principal's ID/passport.
+        agent_photo:     Optional image bytes for the agent's ID/passport.
 
     Returns:
         (docx_bytes, replacement_count)
@@ -307,6 +341,7 @@ def generate_poa_bytes(template_bytes: bytes, info: dict) -> tuple:
     doc = Document(io.BytesIO(template_bytes))
     total = 0
 
+    # --- Text replacements ---
     for key in REPLACEMENT_ORDER:
         field = next((f for f in FIELDS if f["key"] == key), None)
         if field is None:
@@ -321,12 +356,18 @@ def generate_poa_bytes(template_bytes: bytes, info: dict) -> tuple:
         template_val = field["template_value"]
 
         if key == "child_last_name":
-            # Replace "CHILD SHI" (the full pattern), not just "SHI"
             old = f"CHILD {field['template_value']}"
             new = f"CHILD {value}"
             total += _replace_in_doc(doc, old, new)
         else:
             total += _replace_in_doc(doc, template_val, value)
+
+    # --- Photo replacements ---
+    img_paras = _find_image_paragraphs(doc)
+    if principal_photo and len(img_paras) > 0:
+        _replace_image(doc, img_paras[0], principal_photo)
+    if agent_photo and len(img_paras) > 1:
+        _replace_image(doc, img_paras[1], agent_photo)
 
     out = io.BytesIO()
     doc.save(out)

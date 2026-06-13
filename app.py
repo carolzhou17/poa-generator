@@ -127,6 +127,24 @@ def render_single_tab():
                     )
                 st.write("")
 
+        st.divider()
+        st.markdown("**ID / Passport Photos**")
+        photo_col1, photo_col2 = st.columns(2)
+        with photo_col1:
+            st.file_uploader(
+                "Principal's Passport / ID",
+                type=["jpg", "jpeg", "png"],
+                key="photo_principal",
+                help="Photo of the intended parent's passport or government ID",
+            )
+        with photo_col2:
+            st.file_uploader(
+                "Agent's Passport / ID",
+                type=["jpg", "jpeg", "png"],
+                key="photo_agent",
+                help="Photo of the attorney-in-fact's passport or government ID",
+            )
+
         submitted = st.form_submit_button(
             "Generate POA Document",
             type="primary",
@@ -158,8 +176,18 @@ def _run_single_generate():
         st.session_state["single_result"] = {"errors": errors}
         return
 
+    # Read uploaded photos (file_uploader returns None if nothing uploaded)
+    principal_photo = None
+    agent_photo = None
+    p = st.session_state.get("photo_principal")
+    a = st.session_state.get("photo_agent")
+    if p is not None:
+        principal_photo = p.read() if hasattr(p, "read") else p
+    if a is not None:
+        agent_photo = a.read() if hasattr(a, "read") else a
+
     try:
-        doc_bytes, count = generate_poa_bytes(tpl, info)
+        doc_bytes, count = generate_poa_bytes(tpl, info, principal_photo, agent_photo)
         filename = make_filename(info)
         st.session_state["single_result"] = {
             "doc_bytes": doc_bytes,
