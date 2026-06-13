@@ -438,6 +438,133 @@ def generate_multi_poa_bytes(
     return combined, total
 
 
+# ---------------------------------------------------------------------------
+# 2-IP / 3-Agent template support  (Ding & Luo style)
+# ---------------------------------------------------------------------------
+
+FIELDS_2IP = [
+    # IP 1
+    {"key": "ip1_name",     "label": "IP1 Full Name",                  "template_value": "IP1NAME",      "required": True,  "to_upper": True,  "default": ""},
+    {"key": "ip1_passport", "label": "IP1 Passport Number",            "template_value": "IP1PASSPORT",  "required": True,  "to_upper": False, "default": ""},
+    # IP 2
+    {"key": "ip2_name",     "label": "IP2 Full Name",                  "template_value": "IP2NAME",      "required": True,  "to_upper": True,  "default": ""},
+    {"key": "ip2_passport", "label": "IP2 Passport Number",            "template_value": "IP2PASSPORT",  "required": True,  "to_upper": False, "default": ""},
+    # Case
+    {"key": "child_last_name", "label": "Child Last Name",             "template_value": "CHILDNAME",    "required": True,  "to_upper": True,  "default": ""},
+    {"key": "surrogate_name",  "label": "Surrogate Full Name",         "template_value": "SURROGATENAME","required": True,  "to_upper": True,  "default": ""},
+    {"key": "surrogate_dob",   "label": "Surrogate Date of Birth",     "template_value": "SURROGATEDOB", "required": True,  "to_upper": False, "default": ""},
+    {"key": "due_date",        "label": "Due Date",                    "template_value": "DUEDATE",      "required": True,  "to_upper": False, "default": ""},
+    {"key": "hospital_name",   "label": "Hospital Name",               "template_value": "HOSPITALNAME", "required": False, "to_upper": False, "default": "Loma Linda University Medical Center"},
+    # Agents
+    {"key": "agent1_name",  "label": "Agent 1 Full Name",              "template_value": "AGENT1NAME",   "required": True,  "to_upper": True,  "default": ""},
+    {"key": "agent1_dob",   "label": "Agent 1 Date of Birth",          "template_value": "AGENT1DOB",    "required": True,  "to_upper": False, "default": ""},
+    {"key": "agent1_dl",    "label": "Agent 1 CA Driver License No.",  "template_value": "AGENT1DL",     "required": True,  "to_upper": False, "default": ""},
+    {"key": "agent2_name",  "label": "Agent 2 Full Name",              "template_value": "AGENT2NAME",   "required": True,  "to_upper": True,  "default": ""},
+    {"key": "agent2_dob",   "label": "Agent 2 Date of Birth",          "template_value": "AGENT2DOB",    "required": True,  "to_upper": False, "default": ""},
+    {"key": "agent2_dl",    "label": "Agent 2 CA Driver License No.",  "template_value": "AGENT2DL",     "required": True,  "to_upper": False, "default": ""},
+    {"key": "agent3_name",  "label": "Agent 3 Full Name",              "template_value": "AGENT3NAME",   "required": True,  "to_upper": True,  "default": ""},
+    {"key": "agent3_dob",   "label": "Agent 3 Date of Birth",          "template_value": "AGENT3DOB",    "required": True,  "to_upper": False, "default": ""},
+    {"key": "agent3_dl",    "label": "Agent 3 CA Driver License No.",  "template_value": "AGENT3DL",     "required": True,  "to_upper": False, "default": ""},
+    # Firm
+    {"key": "attorney_name","label": "Handling Attorney",              "template_value": "ATTORNEYNAME", "required": False, "to_upper": False, "default": "Xuelan Fang"},
+    {"key": "agency_name",  "label": "Fertility Agency (for filename)","template_value": "",             "required": False, "to_upper": False, "default": ""},
+]
+
+# Longer / more specific strings must come before any substring they contain.
+REPLACEMENT_ORDER_2IP = [
+    "hospital_name",    # "Loma Linda University Medical Center" — longest
+    "surrogate_name",
+    "surrogate_dob",
+    "due_date",
+    "ip1_name",         # IP1NAME before IP1PASSPORT (no actual overlap but keeps intent clear)
+    "ip1_passport",
+    "ip2_name",
+    "ip2_passport",
+    "child_last_name",
+    "agent1_name",      # AGENT1NAME before AGENT1DOB / AGENT1DL
+    "agent1_dob",
+    "agent1_dl",
+    "agent2_name",
+    "agent2_dob",
+    "agent2_dl",
+    "agent3_name",
+    "agent3_dob",
+    "agent3_dl",
+    "attorney_name",
+]
+
+# Image-slot indices (into _find_image_paragraphs result) for the 2IP template.
+# Layout: agent1=0, agent2=1, agent3=2, ip1=3+4 (same photo), ip2=5+6 (same photo).
+_2IP_PHOTO_SLOTS = {
+    "agent1": [0],
+    "agent2": [1],
+    "agent3": [2],
+    "ip1":    [3, 4],
+    "ip2":    [5, 6],
+}
+
+
+def generate_2ip_poa_bytes(
+    template_bytes: bytes,
+    info: dict,
+    photos: Optional[dict] = None,
+) -> tuple:
+    """
+    Generate a single 2-IP / 3-agent POA document.
+
+    info: dict with keys matching FIELDS_2IP.
+    photos: optional dict with keys "agent1", "agent2", "agent3", "ip1", "ip2" → bytes.
+    Returns (docx_bytes, replacement_count).
+    """
+    doc = Document(io.BytesIO(template_bytes))
+    total = 0
+
+    for key in REPLACEMENT_ORDER_2IP:
+        field = next((f for f in FIELDS_2IP if f["key"] == key), None)
+        if not field:
+            continue
+        value = info.get(key, "").strip()
+        if field["to_upper"]:
+            value = value.upper()
+        if not value:
+            value = field["default"]
+        if field["template_value"] and value:
+            total += _replace_in_doc(doc, field["template_value"], value)
+
+    if photos:
+        img_paras = _find_image_paragraphs(doc)
+        for person, slots in _2IP_PHOTO_SLOTS.items():
+            photo_bytes = photos.get(person)
+            if photo_bytes:
+                for slot in slots:
+                    if slot < len(img_paras):
+                        _replace_image(doc, img_paras[slot], photo_bytes)
+
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue(), total
+
+
+def validate_2ip_case(info: dict) -> list:
+    """Return list of error strings for a 2IP case. Empty = valid."""
+    errors = []
+    for field in FIELDS_2IP:
+        if field["required"] and not info.get(field["key"], "").strip():
+            errors.append(f"'{field['label']}' is required.")
+    return errors
+
+
+def make_filename_2ip(info: dict) -> str:
+    ip1_last = (info.get("ip1_name", "IP1") or "IP1").split()[-1]
+    ip2_last = (info.get("ip2_name", "IP2") or "IP2").split()[-1]
+    sur_last = (info.get("surrogate_name", "Surrogate") or "Surrogate").split()[-1]
+    agency = info.get("agency_name", "").strip()
+    parts = [f"POA - {ip1_last} & {ip2_last} & {sur_last}"]
+    if agency:
+        parts.append(agency)
+    return " - ".join(parts) + ".docx"
+
+
 def get_csv_columns() -> list:
     return [f["key"] for f in FIELDS]
 
