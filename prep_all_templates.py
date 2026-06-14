@@ -303,6 +303,20 @@ def prep(nip, na):
         if idx < len(paras):
             set_para_text(paras[idx], text)
 
+    # Shi & Aispuro (1ip/1agent) source quirks
+    if nip == 1 and na == 1:
+        # Para 21 inherited double-spacing from source — reset to normal
+        pPr = paras[21]._p.find(qn("w:pPr"))
+        if pPr is not None:
+            spacing = pPr.find(qn("w:spacing"))
+            if spacing is not None:
+                pPr.remove(spacing)
+        # Para 25 has an explicit page break that creates a blank page before notary
+        p25 = paras[25]._p
+        for child in list(p25):
+            if child.tag != qn("w:pPr"):
+                p25.remove(child)
+
     # Fix table caption cell
     try:
         cell = doc.tables[0].rows[0].cells[0]
