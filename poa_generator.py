@@ -323,6 +323,33 @@ def _replace_image_blip(doc, blip, new_bytes: bytes) -> bool:
     if rid is None:
         return False
     doc.part.related_parts[rid]._blob = new_bytes
+
+    # Resize the frame (wp:extent) to match the photo's actual aspect ratio
+    # so the image is never stretched or squashed.
+    try:
+        from PIL import Image as _PILImage
+        img_w, img_h = _PILImage.open(io.BytesIO(new_bytes)).size
+        if img_w > 0 and img_h > 0:
+            elem = blip.getparent()
+            while elem is not None and elem.tag not in (qn("wp:inline"), qn("wp:anchor")):
+                elem = elem.getparent()
+            if elem is not None:
+                ext = elem.find(qn("wp:extent"))
+                if ext is not None:
+                    orig_cx = int(ext.get("cx", 0))
+                    orig_cy = int(ext.get("cy", 0))
+                    if orig_cx > 0 and orig_cy > 0:
+                        img_ratio = img_w / img_h
+                        frame_ratio = orig_cx / orig_cy
+                        if img_ratio > frame_ratio:
+                            new_cx, new_cy = orig_cx, int(orig_cx / img_ratio)
+                        else:
+                            new_cx, new_cy = int(orig_cy * img_ratio), orig_cy
+                        ext.set("cx", str(new_cx))
+                        ext.set("cy", str(new_cy))
+    except Exception:
+        pass
+
     return True
 
 
