@@ -22,6 +22,34 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 
+def _accept_all_changes(doc):
+    """Accept all tracked changes and disable track-revisions mode."""
+    settings = doc.settings.element
+    tr = settings.find(qn("w:trackRevisions"))
+    if tr is not None:
+        settings.remove(tr)
+    body = doc.element.body
+    for ins_el in list(body.iter(qn("w:ins"))):
+        parent = ins_el.getparent()
+        if parent is None:
+            continue
+        idx = list(parent).index(ins_el)
+        for child in list(ins_el):
+            parent.insert(idx, child)
+            idx += 1
+        parent.remove(ins_el)
+    for del_el in list(body.iter(qn("w:del"))):
+        parent = del_el.getparent()
+        if parent is not None:
+            parent.remove(del_el)
+    for tag in (qn("w:rPrChange"), qn("w:pPrChange"), qn("w:tblPrChange"),
+                qn("w:trPrChange"), qn("w:tcPrChange")):
+        for el in list(body.iter(tag)):
+            p = el.getparent()
+            if p is not None:
+                p.remove(el)
+
+
 def _gray_png(width=440, height=275, gray=220):
     """
     Return bytes of a minimal valid grayscale PNG.
@@ -280,6 +308,10 @@ def prep(nip, na):
     doc = Document(src)
     paras = doc.paragraphs
 
+    # Accept all tracked changes and turn off track-revisions before doing anything
+    _accept_all_changes(doc)
+    paras = doc.paragraphs  # refresh after accepting changes
+
     replacements = {
         7:  p7(nip),
         10: p10(nip),
@@ -292,10 +324,9 @@ def prep(nip, na):
         17: p17(nip, na),
         18: p18(nip, na),
         21: p21(nip),
-        23: p23(nip),
+        23: p23(nip) if nip == 1 else "",  # 2IP uses individual lines (para 24/27); clear combined line
     }
     if nip == 2:
-        # Signature block has two individual name lines (in w:ins in source)
         replacements[24] = "IP1NAME"
         replacements[27] = "IP2NAME"
 
@@ -312,6 +343,19 @@ def prep(nip, na):
             spacing = pPr.find(qn("w:spacing"))
             if spacing is not None:
                 pPr.remove(spacing)
+
+    # 2IP sources don't have a page break before the notary section; add one.
+    # Para 28 is the empty paragraph just before NOTARY ACKNOWLEDGMENT (para 29).
+    if nip == 2:
+        if len(paras) > 28:
+            p28 = paras[28]._p
+            # Only add if no page break already present
+            if p28.find(".//" + qn("w:br")) is None:
+                r = OxmlElement("w:r")
+                br = OxmlElement("w:br")
+                br.set(qn("w:type"), "page")
+                r.append(br)
+                p28.append(r)
 
     # Fix table caption cell
     try:
