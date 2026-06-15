@@ -297,10 +297,28 @@ def _find_image_paragraphs(doc) -> list:
             if p._element.find('.//' + qn('a:blip')) is not None]
 
 
+def _find_image_blips(doc) -> list:
+    """Return list of (paragraph, blip_element) — one entry per image, in document order.
+    Unlike _find_image_paragraphs, this handles multiple images in the same paragraph."""
+    result = []
+    for p in doc.paragraphs:
+        for blip in p._element.iter(qn('a:blip')):
+            result.append((p, blip))
+    return result
+
+
 def _replace_image(doc, para, new_bytes: bytes) -> bool:
     blip = para._element.find('.//' + qn('a:blip'))
     if blip is None:
         return False
+    rid = blip.get(qn('r:embed'))
+    if rid is None:
+        return False
+    doc.part.related_parts[rid]._blob = new_bytes
+    return True
+
+
+def _replace_image_blip(doc, blip, new_bytes: bytes) -> bool:
     rid = blip.get(qn('r:embed'))
     if rid is None:
         return False
@@ -650,16 +668,18 @@ def get_fields_v2(num_ips: int, num_agents: int) -> list:
     return fields
 
 
-# Photo slot positions (index into _find_image_paragraphs result) for known combos.
+# Photo slot positions (index into _find_image_blips result, one entry per image).
+# Order matches template attachment order: agents first, then IP2 (Intended Mother),
+# then IP1 (Intended Father).  Confirmed by inspecting paragraph labels under each slot.
 _V2_PHOTO_SLOTS = {
     # 1-IP templates: agent IDs first, then IP passport
-    (1, 1): {"ip1": [0], "agent1": [1]},
+    (1, 1): {"agent1": [0], "ip1": [1]},
     (1, 2): {"agent1": [0], "agent2": [1], "ip1": [2]},
-    (1, 3): {"agent1": [0], "ip1": [1]},
-    # 2-IP templates: IP1 passport first, then agent IDs, then IP2 passport
-    (2, 1): {"ip1": [0], "agent1": [1], "ip2": [2]},
-    (2, 2): {"ip1": [0], "agent1": [1], "agent2": [2], "ip2": [3]},
-    (2, 3): {"ip1": [0], "agent1": [1], "agent2": [2], "agent3": [3], "ip2": [4]},
+    (1, 3): {"agent1": [0], "agent2": [1], "agent3": [2], "ip1": [3]},
+    # 2-IP templates: agent IDs first, then IP2 (Intended Mother), then IP1 (Intended Father)
+    (2, 1): {"agent1": [0], "ip2": [1], "ip1": [2]},
+    (2, 2): {"agent1": [0], "agent2": [1], "ip2": [2], "ip1": [3]},
+    (2, 3): {"agent1": [0], "agent2": [1], "agent3": [2], "ip2": [3], "ip1": [4]},
 }
 
 
@@ -701,13 +721,14 @@ def generate_poa_v2_bytes(
     if photos:
         slots = _V2_PHOTO_SLOTS.get((num_ips, num_agents))
         if slots:
-            img_paras = _find_image_paragraphs(doc)
+            img_blips = _find_image_blips(doc)
             for person, slot_list in slots.items():
                 pbytes = photos.get(person)
                 if pbytes:
                     for s in slot_list:
-                        if s < len(img_paras):
-                            _replace_image(doc, img_paras[s], pbytes)
+                        if s < len(img_blips):
+                            _, blip = img_blips[s]
+                            _replace_image_blip(doc, blip, pbytes)
 
     out = io.BytesIO()
     doc.save(out)
