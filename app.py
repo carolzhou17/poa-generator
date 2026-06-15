@@ -307,10 +307,12 @@ def _run_v2_generate(num_ips: int, num_agents: int):
     for n in range(1, num_ips + 1):
         f = st.session_state.get(f"v2_photo_ip{n}")
         if f is not None:
+            f.seek(0)
             photos[f"ip{n}"] = f.read()
     for n in range(1, num_agents + 1):
         f = st.session_state.get(f"v2_photo_agent{n}")
         if f is not None:
+            f.seek(0)
             photos[f"agent{n}"] = f.read()
 
     try:
