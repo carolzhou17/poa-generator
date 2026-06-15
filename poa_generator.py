@@ -652,8 +652,14 @@ def get_fields_v2(num_ips: int, num_agents: int) -> list:
 
 # Photo slot positions (index into _find_image_paragraphs result) for known combos.
 _V2_PHOTO_SLOTS = {
+    # 1-IP templates: agent IDs first, then IP passport
     (1, 1): {"ip1": [0], "agent1": [1]},
-    (2, 3): {"agent1": [0], "agent2": [1], "agent3": [2], "ip1": [3, 4], "ip2": [5, 6]},
+    (1, 2): {"agent1": [0], "agent2": [1], "ip1": [2]},
+    (1, 3): {"agent1": [0], "ip1": [1]},
+    # 2-IP templates: IP1 passport first, then agent IDs, then IP2 passport
+    (2, 1): {"ip1": [0], "agent1": [1], "ip2": [2]},
+    (2, 2): {"ip1": [0], "agent1": [1], "agent2": [2], "ip2": [3]},
+    (2, 3): {"ip1": [0], "agent1": [1], "agent2": [2], "agent3": [3], "ip2": [4]},
 }
 
 
