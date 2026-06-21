@@ -8,6 +8,7 @@ import io
 import csv
 from typing import Optional, List
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 
@@ -285,6 +286,13 @@ def _replace_in_doc(doc, old: str, new: str) -> int:
             for cell in row.cells:
                 for para in cell.paragraphs:
                     count += _replace_in_paragraph(para, old, new)
+    # Also scan text boxes (w:txbxContent inside drawings) — caption labels under
+    # photos live here and are not visible to doc.paragraphs.
+    for txbx in doc.element.body.iter(qn("w:txbxContent")):
+        for t_el in txbx.iter(qn("w:t")):
+            if t_el.text and old in t_el.text:
+                count += t_el.text.count(old)
+                t_el.text = t_el.text.replace(old, new)
     return count
 
 
@@ -324,6 +332,73 @@ def _replace_image_blip(doc, blip, new_bytes: bytes) -> bool:
         return False
     doc.part.related_parts[rid]._blob = new_bytes
     return True
+
+
+def _fix_attachment_layout(doc) -> None:
+    """Fix photo attachment pages:
+    - pageBreakBefore + centered + auto line-spacing on every photo paragraph
+    - centered label on the paragraph immediately after each photo
+    - delete empty paragraphs between consecutive photo+label pairs (removes blank pages)
+    """
+    all_paras = list(doc.paragraphs)  # snapshot before any deletions
+    photo_indices = [i for i, p in enumerate(all_paras)
+                     if list(p._element.iter(qn("a:blip")))]
+
+    if not photo_indices:
+        return
+
+    # Apply formatting to each photo paragraph and its label
+    for i in photo_indices:
+        p = all_paras[i]._p
+        pPr = p.find(qn("w:pPr"))
+        if pPr is None:
+            pPr = OxmlElement("w:pPr")
+            p.insert(0, pPr)
+
+        if pPr.find(qn("w:pageBreakBefore")) is None:
+            pPr.append(OxmlElement("w:pageBreakBefore"))
+
+        jc = pPr.find(qn("w:jc"))
+        if jc is None:
+            jc = OxmlElement("w:jc")
+            pPr.append(jc)
+        jc.set(qn("w:val"), "center")
+
+        # Auto line spacing — prevents Word from clipping the image to one line height
+        spacing = pPr.find(qn("w:spacing"))
+        if spacing is None:
+            spacing = OxmlElement("w:spacing")
+            pPr.append(spacing)
+        spacing.set(qn("w:line"), "240")
+        spacing.set(qn("w:lineRule"), "auto")
+
+        # Center the label paragraph immediately after the photo
+        if i + 1 < len(all_paras):
+            lp = all_paras[i + 1]._p
+            lpPr = lp.find(qn("w:pPr"))
+            if lpPr is None:
+                lpPr = OxmlElement("w:pPr")
+                lp.insert(0, lpPr)
+            ljc = lpPr.find(qn("w:jc"))
+            if ljc is None:
+                ljc = OxmlElement("w:jc")
+                lpPr.append(ljc)
+            ljc.set(qn("w:val"), "center")
+
+    # Delete empty paragraphs between consecutive photo+label pairs.
+    # These were spacing filler in the original template but now create blank pages.
+    # Work in reverse so earlier indices remain valid.
+    for k in range(len(photo_indices) - 1, 0, -1):
+        gap_start = photo_indices[k - 1] + 2   # first para after the previous label
+        gap_end   = photo_indices[k] - 1        # last para before the next photo
+        for idx in range(gap_end, gap_start - 1, -1):
+            p_el = all_paras[idx]._p
+            has_text = any(t.text and t.text.strip() for t in p_el.iter(qn("w:t")))
+            has_img  = bool(list(p_el.iter(qn("a:blip"))))
+            if not has_text and not has_img:
+                parent = p_el.getparent()
+                if parent is not None:
+                    parent.remove(p_el)
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +793,62 @@ def generate_poa_v2_bytes(
         if value:
             total += _replace_in_doc(doc, tval, value)
 
+    # Photo captions may have literal "Intended Father"/"Intended Mother" rather than
+    # IP{N}ROLE placeholders. Replace any remaining occurrences as a fallback.
+    _role1 = (info.get("ip1_role") or "").strip() or "Intended Father"
+    total += _replace_in_doc(doc, "Intended Father", _role1)
+    if num_ips >= 2:
+        _role2 = (info.get("ip2_role") or "").strip() or "Intended Mother"
+        total += _replace_in_doc(doc, "Intended Mother", _role2)
+
+    if num_ips >= 2:
+        # Some 2IP source templates left a spurious combined-name paragraph in the
+        # signature section (e.g. "MING AND SHUYU" standalone, separate from the
+        # WITNESS WHEREOF sentence). Clear any paragraph whose entire text is exactly
+        # the combined IP names — these should have been blanked during template prep.
+        _ip1 = (info.get("ip1_name") or "").strip().upper()
+        _ip2 = (info.get("ip2_name") or "").strip().upper()
+        _combined = f"{_ip1} AND {_ip2}"
+        _all_doc_paras = doc.paragraphs
+        for _pi, _para in enumerate(_all_doc_paras):
+            if "".join(r.text for r in _para.runs).strip() == _combined:
+                # This para should be the IP1 signature line (underlined tabs).
+                # Template prep failed to replace it with tabs, so do it now.
+                runs = _para.runs
+                if len(runs) == 1:
+                    runs[0].text = "\t\t\t\t\t"
+                else:
+                    for _r in runs:
+                        _r.text = ""
+                # The paragraph 2 positions later (after IP1NAME) is supposed to be
+                # a plain spacer line, but in 2IP/multi-agent templates it was left
+                # with underline formatting, making it look like a second signature
+                # line. Strip the underline so it renders as whitespace.
+                _spacer_idx = _pi + 2
+                if _spacer_idx < len(_all_doc_paras):
+                    for _r in _all_doc_paras[_spacer_idx].runs:
+                        _rPr = _r._r.find(qn("w:rPr"))
+                        if _rPr is not None:
+                            _u_el = _rPr.find(qn("w:u"))
+                            if _u_el is not None:
+                                _rPr.remove(_u_el)
+                break
+
+        # Some 2IP source templates are also missing the page break before the notary
+        # section. Add one now if it is absent.
+        _all_paras = doc.paragraphs
+        for _i, _para in enumerate(_all_paras):
+            if "NOTARY ACKNOWLEDGMENT" in "".join(r.text for r in _para.runs).upper():
+                if _i > 0:
+                    _prev_p = _all_paras[_i - 1]._p
+                    if _prev_p.find(".//" + qn("w:br")) is None:
+                        _r_el = OxmlElement("w:r")
+                        _br_el = OxmlElement("w:br")
+                        _br_el.set(qn("w:type"), "page")
+                        _r_el.append(_br_el)
+                        _prev_p.append(_r_el)
+                break
+
     if photos:
         slots = _V2_PHOTO_SLOTS.get((num_ips, num_agents))
         if slots:
@@ -729,6 +860,8 @@ def generate_poa_v2_bytes(
                         if s < len(img_blips):
                             _, blip = img_blips[s]
                             _replace_image_blip(doc, blip, pbytes)
+
+    _fix_attachment_layout(doc)
 
     out = io.BytesIO()
     doc.save(out)
